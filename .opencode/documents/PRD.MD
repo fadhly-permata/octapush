@@ -2,8 +2,8 @@
 
 **Product Name:** OctaPush  
 **Target Platforms:** Cross-Platform (Web, Android, iOS)  
-**Core Stack:** React Native for Web / Expo, TypeScript, Dual SQLite Engine  
-**Document Version:** 1.4.0 (Updated Product Branding to OctaPush)  
+**Core Stack:** React Native for Web / Expo, TypeScript, Supabase PostgreSQL (Multi-Schema), Supabase Auth (Google OAuth)  
+**Document Version:** 1.7.0 (Penambahan Security Hardening anti-cheat/XSS/SQLi, i18n 2 bahasa `id`/`en`, mandat try-catch + Centralized Error Log, Realtime Sync, Multi-User Collaboration & Template Marketplace)  
 
 ---
 
@@ -13,13 +13,16 @@
 **OctaPush** adalah platform *AI-Driven Dynamic UI, Form Generator, & Workflow Engine* cross-platform yang memungkinkan pengguna membuat, menguji, dan merilis halaman **Master**, **Transaksi**, **Laporan (Report)**, serta **Custom Decision Workflow** secara instan dengan antarmuka adaptif (**Light, Dark, & System Auto Theme**) dan isolasi data tingkat tinggi per user.
 
 ### 1.2 Core Value Proposition
-* **Multi-Tenant Schema Isolation:** Memisahkan data setiap user ke dalam skema terisolasi berbasis UUID untuk mencegah pencampuran data (*data leakage*) dan meningkatkan keamanan.
+* **Google Authentication & Project Management:** Login via Google Auth (Supabase Auth) dan halaman khusus untuk mengelola proyek — setiap proyek memiliki identitas `project_uuid` 8 digit yang menjadi bagian dari penamaan seluruh objek DB-nya.
+* **Multi-Tenant Object Isolation:** Memisahkan objek DB milik setiap user/proyek menggunakan konvensi nama `{8_digit_user_short_uuid}_{8digit_project_uuid}_{objek_db_name}` yang ditegakkan oleh Row Level Security (RLS) berbasis JWT untuk mencegah *data leakage* antar tenant.
+* **Logic vs Data Schema Separation (Dev & Prod):** Artefak desain aplikasi (kode, konfigurasi, form) disimpan pada skema **Logic** (`logic_dev`/`logic_prod`), data operasional pada skema **Data** (`data_dev`/`data_prod`) dalam satu klaster Supabase PostgreSQL.
+* **Dev-to-Prod Promotion:** Aplikasi final dapat di-*push* ke environment PROD melalui *clone struktur DB* tanpa menyalin data operasional.
 * **Velocity & Push Generation:** Mengubah instruksi teks menjadi antarmuka fungsional dan logika bisnis otomatis dalam hitungan detik.
 * **Iterative Refinement Studio:** Live preview interaktif bersisian dengan percakapan AI (*chat refinement*) untuk penyempurnaan UI dan skema workflow secara *real-time*.
 * **Adaptive Theme Engine:** Dukungan pergantian tema visual secara presisi (Light Mode, Dark Mode, dan Auto/System Following) pada seluruh UI dan komponen buatan AI.
-* **Event-Driven Workflow Engine:** Eksekusi otomatis logika bisnis berbasis trigger (Form Submit, Field Change, Cron Scheduler, atau Local Task Queue).
+* **Event-Driven Workflow Engine:** Eksekusi otomatis logika bisnis berbasis trigger (Form Submit, Field Change, Cron Scheduler, atau Task Queue).
 * **Multi-Provider AI Agnostic:** Fleksibel dikonfigurasi ke berbagai penyedia model LLM (OpenRouter, HuggingFace, OpenAI, Ollama Proxy, dll.).
-* **Local-First & Isolated Data Persistence:** Pemisahan tegas antara *system metadata* dan *business data* menggunakan **dua database SQLite terpisah**.
+* **Cloud Persistence with Strict Separation:** Pemisahan tegas antara *platform registry* (schema `public`), *app design artifacts* (skema Logic), dan *business data* (skema Data) di Supabase PostgreSQL.
 
 ---
 
@@ -27,8 +30,12 @@
 
 OctaPush mengadopsi arsitektur **Multi-Tenant Dynamic Schema Engine, Workflow Runtime, & Iterative Feedback Loop**:
 
-[KODE_KONTAINER]text
+```text
  ┌─────────────────────────────────────────────────────────┐
+ │      Google Auth Login & Project Management Page        │
+ └────────────────────────────┬────────────────────────────┘
+                              │
+ ┌────────────────────────────┴────────────────────────────┐
  │               OctaPush Generation Studio                │
  └────────────────────────────┬────────────────────────────┘
                               │
@@ -40,97 +47,115 @@ OctaPush mengadopsi arsitektur **Multi-Tenant Dynamic Schema Engine, Workflow Ru
                               │            ▼
   [Live Interactive Preview] <┼─── [Sandbox Memory Engine]
                               │
-                              ▼ (User Approves & Clicks "Publish")
+                              ▼ (User Approves "Publish" / "Push to PROD")
  ┌─────────────────────────────────────────────────────────┐
- │                   Database Storage                      │
- ├────────────────────────────┬────────────────────────────┤
- │ DB 1: system_metadata.db   │ DB 2: app_data.db          │
- │ - Public: Schema Mappings  │ - User Schema [UUID_A]     │
- │ - AI Configs & Preferences │   └─ Dynamic DDL Tables    │
- │ - Page & Workflow Schemas  │ - User Schema [UUID_B]     │
- │ - Triggers & Cron Rules    │   └─ Dynamic DDL Tables    │
- └────────────────────────────┴────────────────────────────┘
+ │          Supabase PostgreSQL (Single Cluster)           │
+ ├──────────────────────────┬──────────────────────────────┤
+ │ public: users, projects, │ logic_dev: {usr8}_{prj8}_    │
+ │ ai_configs, preferences  │   pages, workflows, versions │
+ ├──────────────────────────┼──────────────────────────────┤
+ │ data_dev: {usr8}_{prj8}_ │ logic_prod / data_prod:      │
+ │   tbl_business, queue,   │   structure-only clone via   │
+ │   execution_logs         │   Push to PROD               │
+ └──────────────────────────┴──────────────────────────────┘
                               │
                               ▼
  ┌─────────────────────────────────────────────────────────┐
  │              OctaPush Workflow Engine                   │
  │ (Form Triggers | Cron Scheduler | Task Queue Executor)  │
- └────────────────────────────┴────────────────────────────┘
-[KODE_KONTAINER\
+ └─────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 3. Dual SQLite Database & Schema Isolation Architecture
+## 3. Supabase PostgreSQL Multi-Schema Architecture
 
-Untuk mencegah pencampuran data antar pengguna yang membangun aplikasi di OctaPush, sistem mengadopsi mekanisme **Schema Isolation Mapping**.
+Untuk mencegah pencampuran data antar pengguna yang membangun aplikasi di OctaPush, sistem menggunakan satu klaster Supabase PostgreSQL dengan skema `public` untuk registry platform, serta pasangan skema **Logic** dan **Data** per environment (`logic_dev`/`data_dev` untuk pengembangan, `logic_prod`/`data_prod` hasil *Push to PROD*). Seluruh objek DB milik aplikasi memakai format `{8_digit_user_short_uuid}_{8digit_project_uuid}_{objek_db_name}`.
 
-### 3.1 Database 1: `system_metadata.db` (Penyimpanan Sistem, Theme & Metadata)
+### 3.1 Schema `public` (Platform Registry, Theme & User-Level Metadata)
 
-#### Table: `user_schema_mappings` (Schema Public)
-Menyimpan pemetaan antara User ID asli dengan nama skema terisolasi yang diacak menggunakan format UUID v4 demi keamanan.
+#### Table: `users`
+Registry pengguna platform, tersinkronisasi dengan Supabase Auth.
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `user_id` | TEXT | PRIMARY KEY | ID unik pengguna |
-| `schema_name` | TEXT | NOT NULL, UNIQUE | Nama skema acak format UUID (e.g. `usr_a1b2c3d4_...`) |
-| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Waktu pendaftaran user |
+| `user_id` | UUID | PRIMARY KEY | ID dari Supabase Auth (`auth.users.id`) |
+| `email` | TEXT | NOT NULL | Email Google terverifikasi |
+| `display_name` | TEXT | NULLABLE | Nama tampilan pengguna |
+| `user_short_uuid` | CHAR(8) | NOT NULL, UNIQUE | 8 digit short UUID untuk prefiks penamaan objek |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Waktu pendaftaran user |
+
+#### Table: `projects`
+Mapping user ↔ project beserta status environment.
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 internal |
+| `user_id` | UUID | FK → `public.users(user_id)` | Pemilik proyek |
+| `project_name` | TEXT | NOT NULL | Nama proyek |
+| `project_uuid` | CHAR(8) | NOT NULL, UNIQUE per user | 8 digit project UUID |
+| `object_prefix` | TEXT | NOT NULL, UNIQUE | Gabungan `{user_short_uuid}_{project_uuid}` |
+| `is_pushed_to_prod` | BOOLEAN | DEFAULT false | Status Push to PROD |
+| `prod_pushed_at` | TIMESTAMPTZ | NULLABLE | Waktu push terakhir |
+| `is_deleted` | BOOLEAN | DEFAULT false | Soft-delete flag |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp pembuatan |
 
 #### Table: `ai_configs`
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | UUID v4 |
-| `user_id` | TEXT | FOREIGN KEY | Owner konfigurasi API |
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `user_id` | UUID | FK → `public.users(user_id)` | Owner konfigurasi API |
 | `provider_name` | TEXT | NOT NULL | Contoh: OpenRouter, HuggingFace, OpenAI |
 | `base_url` | TEXT | NOT NULL | Base URL API endpoint |
 | `api_key` | TEXT | NOT NULL | Stored in Encrypted Form |
 | `model_name` | TEXT | NOT NULL | Contoh: `meta-llama/llama-3.1-70b-instruct` |
-| `is_active` | INTEGER | DEFAULT 0 | 1 = Aktif, 0 = Inaktif |
+| `is_active` | BOOLEAN | DEFAULT false | Aktif / Inaktif |
 
 #### Table: `user_preferences`
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `user_id` | TEXT | PRIMARY KEY | Owner preferensi |
+| `user_id` | UUID | PRIMARY KEY, FK → `public.users(user_id)` | Owner preferensi |
 | `theme_mode` | TEXT | DEFAULT 'auto' | Opsi pilihan: `light`, `dark`, `auto` |
-| `updated_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Timestamp pembaruan |
-
-#### Table: `generated_pages`
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | UUID v4 |
-| `user_id` | TEXT | NOT NULL | Referensi Owner ke `user_schema_mappings` |
-| `page_title` | TEXT | NOT NULL | Nama/Judul Halaman |
-| `page_type` | TEXT | NOT NULL | Enum: `MASTER`, `TRANSACTION`, `REPORT` |
-| `target_table` | TEXT | NOT NULL | Nama tabel dalam skema UUID user |
-| `current_version` | INTEGER | DEFAULT 1 | Versi skema UI yang sedang aktif |
-| `is_published` | INTEGER | DEFAULT 0 | 1 = Published, 0 = Draft |
-
-#### Table: `workflows`
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | UUID v4 |
-| `user_id` | TEXT | NOT NULL | Owner Workflow |
-| `workflow_name` | TEXT | NOT NULL | Nama Workflow / Process |
-| `trigger_type` | TEXT | NOT NULL | Enum: `FORM_EVENT`, `SCHEDULER`, `QUEUE`, `MANUAL` |
-| `trigger_config` | TEXT | NOT NULL | JSON konfigurasi trigger (Cron String / Form Event ID) |
-| `workflow_json` | TEXT | NOT NULL | JSON definisi langkah (steps, conditions, actions) |
+| `updated_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp pembaruan |
 
 ---
 
-### 3.2 Database 2: `app_data.db` (Isolated Per-User Schema Storage)
+### 3.2 Schemas `logic_dev` / `logic_prod` (App Design Artifacts per Project)
 
-Tabel bisnis dibuat secara dinamis **hanya di dalam skema khusus user** (`schema_name` UUID) untuk menjamin isolasi total.
+Artefak desain aplikasi hasil generasi AI — halaman (`generated_pages`), workflow (`workflows`), dan versi skema (`page_schema_versions`) — dibuat dinamis dengan prefiks `{usr8}_{prj8}_`. Skema `logic_prod` hanya diisi melalui *Push to PROD* (*structure-only clone*).
 
-*Contoh Eksekusi DDL Dinamis pada `app_data.db`:*
-[KODE_KONTAINER]sql
--- 1. Mengambil schema_name milik user dari system_metadata.db (misal: usr_8f3a9b2c_4d1e...)
--- 2. Membuat tabel bisnis di dalam skema terisolasi pengguna tersebut
-CREATE TABLE IF NOT EXISTS "usr_8f3a9b2c_4d1e_4567_89ab_cdef01234567"."tbl_master_supplier" (
-  "id" TEXT PRIMARY KEY,
+*Contoh Tabel pada `logic_dev`:*
+```sql
+-- object_prefix = "u1a2b3c4_p9f8e7d6"
+CREATE TABLE IF NOT EXISTS "logic_dev"."u1a2b3c4_p9f8e7d6_generated_pages" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "page_title" TEXT NOT NULL,
+  "page_type" TEXT NOT NULL CHECK ("page_type" IN ('MASTER','TRANSACTION','REPORT')),
+  "target_table" TEXT NOT NULL,
+  "current_version" INTEGER DEFAULT 1,
+  "is_published" BOOLEAN DEFAULT false,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+```
+
+---
+
+### 3.3 Schemas `data_dev` / `data_prod` (Isolated Business Data per Project)
+
+Tabel bisnis dibuat secara dinamis **hanya dengan nama berkualifikasi prefiks proyek** (`{usr8}_{prj8}_`) untuk menjamin isolasi total. Akses dilindungi Row Level Security (RLS) berbasis klaim JWT Supabase Auth yang divalidasi terhadap `public.projects`.
+
+*Contoh Eksekusi DDL Dinamis pada `data_dev`:*
+```sql
+-- 1. Mengambil object_prefix milik proyek aktif dari public.projects
+--    (misal: u1a2b3c4_p9f8e7d6)
+-- 2. Membuat tabel bisnis dengan prefiks kepemilikan tersebut
+CREATE TABLE IF NOT EXISTS "data_dev"."u1a2b3c4_p9f8e7d6_tbl_master_supplier" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   "kode_supplier" TEXT,
   "nama_supplier" TEXT,
-  "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
-[KODE_KONTAINER\
+```
 
 ---
 
@@ -196,24 +221,67 @@ CREATE TABLE IF NOT EXISTS "usr_8f3a9b2c_4d1e_4567_89ab_cdef01234567"."tbl_maste
 
 ## 5. Detailed Product Features & Modules
 
-### Module 1: Security & Multi-Tenant Schema Manager
-* **Automatic UUID Schema Provisioning:** Setiap user baru akan otomatis mendapatkan entri `schema_name` berbasis UUID v4 pada tabel mapping `user_schema_mappings`.
-* **Isolated Data Access Layer (DAL):** Semua query database untuk aplikasi yang dibangun user ditempelkan awalan (*prefixed*) nama skema UUID pengguna secara otomatis.
+### Module 1: Authentication & Project Management
+* **Google Auth Login:** Login menggunakan Google OAuth via Supabase Auth; sesi menghasilkan JWT untuk akses database.
+* **Session Lifecycle:** Logout, refresh token otomatis, dan revoke sesi per perangkat.
+* **Project Management Page:** Halaman untuk membuat, melihat, memilih, mengubah nama, dan menghapus proyek milik user yang sedang login (soft-delete + hard-delete terjadwal dengan cleanup objek DB).
+* **Project Provisioning:** Setiap proyek baru mendapatkan `project_uuid` (8 digit) yang digabung dengan `user_short_uuid` menjadi `object_prefix` untuk seluruh objek DB-nya.
 
-### Module 2: System Settings & Theme Engine
+### Module 2: Security & Multi-Tenant Object Isolation
+* **Ownership Naming Convention:** Seluruh objek DB aplikasi (table, store proc/function, view, dll.) memakai format `{8_digit_user_short_uuid}_{8digit_project_uuid}_{objek_db_name}` pada skema `logic_dev`/`data_dev`/`logic_prod`/`data_prod`.
+* **Mandatory DAL Routing:** Aplikasi hasil generasi **selalu** mengakses database melalui OctaPush DAL — tidak ada kredensial/koneksi langsung ke Supabase yang diekspos ke aplikasi, baik di environment DEV maupun PROD.
+* **Isolated Data Access Layer (DAL):** Semua query database ditempelkan awalan (*prefixed*) `object_prefix` proyek aktif secara otomatis; kontrak API DAL terdokumentasi formal.
+* **Row Level Security Enforcement:** Kebijakan RLS berbasis klaim JWT memastikan user/kode tidak dapat mengonsumsi objek milik user/proyek lain.
+* **SQL Guard:** Node `EXECUTE_SQL` divalidasi parser — hanya DML terizinkan, objek wajib berprefiks proyek, tanpa multi-statement.
+* **XSS & Input Sanitization:** Seluruh input disanitasi; renderer dinamis merender konten sebagai data (bukan HTML mentah); attachment divalidasi MIME & ukuran.
+* **Anti-Cheat & Abuse Protection:** Validasi ulang payload di server (never trust client), CSRF token, security headers (CSP/HSTS), velocity check anti-automasi.
+
+### Module 3: System Settings & Theme Engine
 * **Theme Mode Switcher:** Pilihan Light, Dark, dan Auto/System Default.
 * **Dynamic Palette Propagation:** Seluruh komponen UI dinamis menyesuaikan variabel warna tema secara otomatis.
 
-### Module 3: AI Provider Configurator
+### Module 4: AI Provider Configurator
 *(Multi-Provider Support, API Key Encryption, Connectivity Tester)*
 
-### Module 4: OctaPush Generation Studio
+### Module 5: OctaPush Generation Studio
 * **Split View / Mobile Sheet:** Dual pane untuk Chat & Live Theme-Aware Preview.
 * **Contextual Refinement:** Obrolan multi-turn untuk penyempurnaan UI & logika workflow.
+* **Publish to DEV:** DDL dieksekusi ke `logic_dev`/`data_dev` dengan prefiks proyek aktif.
+* **File Attachments:** Field attachment pada form tersimpan di Supabase Storage dengan path berprefiks proyek.
 
-### Module 5: Dynamic Runtime & Workflow Execution Engine
-* **Triggers:** Form Callbacks (`ON_SUBMIT`, `ON_CHANGE`), Cron Scheduler, & Local Task Queue.
+### Module 6: Dev-to-Prod Promotion Engine
+* **Push to PROD:** Aksi pada Project Management Page yang melakukan *clone struktur DB* dari skema DEV ke skema PROD tanpa menyalin data operasional.
+
+### Module 7: Schema Evolution & Migration Engine
+* **Re-Push (Structural Diff):** Push to PROD berulang mendeteksi diff struktur DEV→PROD dan menerapkannya sebagai migration (`ALTER TABLE`, objek baru) dengan preview + konfirmasi pemilik.
+* **Form Evolution:** Perubahan form menghasilkan rencana migrasi kolom (aman vs destruktif) terhadap data existing.
+* **PROD Rollback:** Snapshot struktur sebelum migration memungkinkan pengembalian kondisi PROD.
+
+### Module 8: Generated App Distribution & End-User Access
+* **Publishing Modes:** Public Link (tanpa login), Restricted (end-user login Google), atau Private (pemilik saja).
+* **End-User Identity:** Sesi end-user terpisah dari builder, dengan `access_scope` terbatas pada runtime aplikasi terkait; seluruh aktivitas tetap via DAL + RLS.
+
+### Module 9: Quota, Observability & Operations
+* **Quota Enforcement:** Kuota per user (jumlah proyek, ukuran DB, attachment, rate limit DAL) dengan error `ERR_QTA_009`.
+* **Audit & Dashboard:** Audit log immutable (`public.audit_logs`) untuk DDL/migration/promotion/hard-delete/RLS rejection + dashboard metrik workflow & DAL.
+* **Backup:** PITR minimal 7 hari untuk data PROD.
+* **Centralized Error Log & Tracing:** Tabel `public.error_logs` menampung semua error (client/DAL/workflow/AI/DB) dengan konteks user/project/session; tracing per user/proyek; triage status (`OPEN` → `INVESTIGATING` → `RESOLVED`/`IGNORED`) sebagai dasar perbaikan.
+
+### Module 10: Internationalization (i18n)
+* **2 Locale (fase awal):** `id` (Bahasa Indonesia, default) dan `en` (English).
+* **Generated App i18n:** AI dapat menghasilkan blok `"i18n"` pada JSON skema; string dikelola pada `{usr8}_{prj8}_app_translations`; runtime merender sesuai locale end-user dengan fallback ke default.
+* **Platform UI Locale:** Studio, Project Management, dan Settings tersedia dalam `id` & `en`.
+
+### Module 11: Realtime Sync, Collaboration & Marketplace
+* **Realtime Data Sync:** Update form/data realtime via Supabase Realtime pada objek prefiks proyek (RLS-aware), tanpa refresh manual.
+* **Multi-User Collaboration:** Undang kolaborator per proyek dengan role `owner`/`editor`/`viewer` (`public.project_members`); presence indicator di Studio.
+* **Template Marketplace:** Ekspor proyek sebagai template + instalasi ke proyek baru (clone struktur Logic ke prefix baru); metadata template (nama, deskripsi, versi, author).
+
+### Module 12: Dynamic Runtime & Workflow Execution Engine
+* **Triggers:** Form Callbacks (`ON_SUBMIT`, `ON_CHANGE`), Cron Scheduler, & Task Queue.
 * **Nodes:** `CONDITION`, `EXECUTE_SQL`, `CALCULATION`, `LOCAL_NOTIFICATION`.
+* **Environment-Aware Execution:** Runtime berjalan pada objek prefiks proyek aktif di `data_dev`, atau di `data_prod` bila aplikasi diakses dalam mode PROD.
+* **Exception Handling Mandate:** Seluruh kode platform & artefak engine wajib try-catch; setiap error tercatat ke Centralized Error Log.
 
 ---
 
@@ -222,8 +290,39 @@ CREATE TABLE IF NOT EXISTS "usr_8f3a9b2c_4d1e_4567_89ab_cdef01234567"."tbl_maste
 | Layer | Technology Selected |
 |---|---|
 | **Core Framework** | React Native for Web / Expo SDK (TypeScript) |
-| **Multi-Tenant Security** | Schema Mapping Manager (UUID v4 Generator & Resolver) |
+| **Authentication** | Supabase Auth — Google OAuth Provider |
+| **Multi-Tenant Security** | Object Prefix Resolver (`{user8}_{prj8}_`) + PostgreSQL Row Level Security (RLS) berbasis klaim JWT |
 | **Theme & UI** | React Native Paper / Gluestack UI + `useColorScheme` Hook |
-| **Database Driver** | `expo-sqlite` (Dual connection support & multi-schema query builder) |
-| **Background Scheduler** | `expo-background-fetch` & `expo-task-manager` |
+| **Database Driver** | Supabase PostgreSQL (`supabase-js` / PostgREST) dengan 4 schema environment (`logic_dev`, `data_dev`, `logic_prod`, `data_prod`) |
+| **File Storage** | Supabase Storage (bucket berprefiks `{usr8}_{prj8}/` untuk attachment form) |
+| **Internationalization** | `i18next` / `react-i18next` (locale: `id` default, `en`) + `{usr8}_{prj8}_app_translations` |
+| **Realtime** | Supabase Realtime (channel per project, RLS-aware) |
+| **Background Scheduler** | Supabase Edge Functions / pg_cron + Task Queue Tables |
+| **Observability** | `public.audit_logs` (append-only) + Dashboard metrik workflow/DAL |
 | **State Management** | Zustand |
+
+---
+
+## 7. Implementation Phasing (Build Roadmap)
+
+Urutan eksekusi pengembangan — fase berikutnya tidak dimulai sebelum fase sebelumnya memenuhi acceptance criteria.
+
+### Fase F1 — Foundation
+* Scope: Google Auth, Project Management, OctaPush DAL, RLS + object prefix provisioning.
+* Acceptance gate: lulus benchmark skalabilitas sesuai NFR-PER-03 di BRD (overhead RLS ≤ 20 md p95; simulasi 1.000 proyek; 50 provisioning paralel tanpa deadlock).
+
+### Fase F2 — Generation Studio (DEV)
+* Scope: AI Provider Configurator, Generation Studio dual-pane, Publish ke `logic_dev`/`data_dev`, Theme Engine, SQL Guard, try-catch + error logging pipeline.
+* Acceptance gate: end-to-end prompt → form → publish → submit data berjalan pada environment DEV dengan isolasi penuh.
+
+### Fase F3 — Production & Distribution
+* Scope: Push to PROD (structure clone), Generated App Distribution (Private/Restricted/Public), Centralized Error Log dashboard & triage.
+* Acceptance gate: aplikasi hasil generate dapat dipublikasikan dan digunakan end-user via DAL tanpa akses DB langsung.
+
+### Fase F4 — Security Hardening & i18n
+* Scope: sanitization/XSS/CSRF/security headers penuh, anti-abuse velocity check, i18n `id`/`en` untuk platform UI dan generated app, quota enforcement.
+* Acceptance gate: lolos security checklist internal + kedua locale berfungsi end-to-end.
+
+### Fase F5 — Ecosystem
+* Scope: Schema Evolution & Migration engine (re-push diff), Realtime Sync, Multi-User Collaboration, Template Marketplace + seed templates.
+* Acceptance gate: re-push migration aman pada proyek ber-data; kolaborasi multi-user dengan role terverifikasi.

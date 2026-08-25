@@ -1,7 +1,7 @@
 # FUNCTIONAL SPECIFICATION DOCUMENT (FSD)
 
 **Project Name:** OctaPush Platform  
-**Document Version:** 1.0.0  
+**Document Version:** 1.3.0  
 **Status:** Approved / Baseline  
 **Target Platform:** Cross-Platform (Web, Android, iOS)  
 
@@ -12,6 +12,9 @@
 | Version | Date | Author | Description of Changes |
 |---|---|---|---|
 | 1.0.0 | 25 Aug 2026 | Lead System Architect | Initial Functional Specification Document (FSD) created directly mapped to BRD v1.0.0 and PRD v1.4.0 (Theme Engine, Multi-Tenant Schema Resolver, Dual SQLite Engine, Dynamic Studio, and Workflow Engine). |
+| 1.1.0 | 25 Aug 2026 | Lead System Architect | Migrasi database ke Supabase PostgreSQL (skema `logic_dev`, `data_dev`, `logic_prod`, `data_prod`), konvensi nama objek `{user8}_{prj8}_{object}`, Google Authentication, Project Management, dan Push to PROD. |
+| 1.2.0 | 25 Aug 2026 | Lead System Architect | Penambahan spesifikasi: Schema Evolution & Migration (structural diff, form evolution, rollback), SQL Guard, session lifecycle, hard-delete cleanup, Generated App Distribution (end-user access), Supabase Storage attachment, quota enforcement, audit log & observability, backup/PITR. |
+| 1.3.0 | 25 Aug 2026 | Lead System Architect | Penambahan spesifikasi: Security Hardening (§3.9 — sanitization, XSS, CSRF/CSP, anti-abuse), i18n 2 bahasa `id`/`en` (§3.10), Centralized Error Log `public.error_logs` + tracing/triage (§3.8.5), Realtime Sync & Collaboration + Template Marketplace (§3.11), dan Coding Standards & Exception Handling Policy (§7). |
 
 ---
 
@@ -24,28 +27,33 @@
  │                       OctaPush Client Application                       │
  ├─────────────────────────────────────────────────────────────────────────┤
  │ ┌──────────────────────┐  ┌─────────────────────┐  ┌──────────────────┐ │
- │ │ System Settings      │  │ Dynamic UI Studio   │  │ Runtime Render   │ │
- │ │ (Theme & AI Config)  │  │ (Chat & Preview)    │  │ (Forms & Engine) │ │
+ │ │ Auth & Project Mgmt  │  │ Dynamic UI Studio   │  │ Runtime Render   │ │
+ │ │ (Google Login, Push) │  │ (Chat & Preview)    │  │ (Forms & Engine) │ │
  │ └──────────┬───────────┘  └──────────┬──────────┘  └────────┬─────────┘ │
- └────────────┼─────────────────────────┼──────────────────────┼───────────┘
-              │                         │                      │
-              ▼                         ▼                      ▼
+ │ ┌──────────────────────┐                                              │
+ │ │ System Settings      │                                              │
+ │ │ (Theme & AI Config)  │                                              │
+ │ └──────────┬───────────┘                                              │
+ └────────────┼─────────────────────────┬────────────────────────────────┘
+              │                         │
+              ▼                         ▼
  ┌─────────────────────────────────────────────────────────────────────────┐
  │                   OctaPush Core Controller & DAL                        │
  ├────────────────────────────┬────────────────────────────────────────────┤
- │ - Theme Context Provider   │ - Schema Isolation Resolver (UUID Mapping) │
- │ - AI Provider Service      │ - Dynamic DDL / Query Builder Engine       │
+ │ - Supabase Auth Session    │ - Object Prefix Resolver ({usr8}_{prj8}_)  │
+ │ - Theme Context Provider   │ - Dynamic DDL / Query Builder Engine       │
+ │ - AI Provider Service      │ - RLS-Aware Query Guard                    │
  │ - State Engine (Zustand)   │ - Workflow Runtime & Task Queue Worker     │
  └────────────┬───────────────┴────────────────────────┬───────────────────┘
-              │                                        │
-              ▼                                        ▼
+               │                                        │
+               ▼                                        ▼
  ┌───────────────────────────┐            ┌────────────────────────────────┐
- │ DB 1: system_metadata.db  │            │ DB 2: app_data.db              │
- ├───────────────────────────┤            ├────────────────────────────────┤
- │ - public.user_schema_maps │            │ - "usr_uuid_A".tbl_business    │
- │ - public.ai_configs       │            │ - "usr_uuid_A".task_queue      │
- │ - public.user_preferences │            │ - "usr_uuid_B".tbl_business    │
- │ - public.generated_pages  │            │ - "usr_uuid_B".task_queue      │
+ │ Supabase PostgreSQL       │            │ Supabase PostgreSQL            │
+ │ Schema: public            │            │ Schemas: logic_dev, data_dev,  │
+ │ - users, projects         │            │ logic_prod, data_prod          │
+ │ - ai_configs              │            │ - "{usr8}_{prj8}_pages"        │
+ │ - user_preferences        │            │ - "{usr8}_{prj8}_tbl_business" │
+ │                           │            │ - "{usr8}_{prj8}_queue/logs"   │
  └───────────────────────────┘            └────────────────────────────────┘
 ```
 
@@ -53,25 +61,63 @@
 
 ## 3. DETAILED MODULE FUNCTIONAL SPECIFICATIONS
 
-### 3.1 Module 1: Security & Multi-Tenant Schema Resolver
+### 3.1 Module 1: Authentication, Project Management & Multi-Tenant Isolation
 
 #### 3.1.1 Overview
-Mekanisme ini bertugas menjamin isolasi data mutlak antar-pengguna pada basis data operasional `app_data.db` dengan memetakan `user_id` ke `schema_name` berbasis UUID v4 acak.
+Mekanisme ini bertugas menjamin (a) setiap pengguna terautentikasi melalui **Google Auth** (Supabase Auth), (b) setiap proyek memiliki identitas unik yang menjadi prefiks seluruh objek DB-nya, dan (c) isolasi data mutlak antar user/proyek pada skema `logic_dev`/`data_dev`/`logic_prod`/`data_prod`.
 
-#### 3.1.2 Functional Logic & Rules
-1. **App Initialization Hook:**
-   * Saat aplikasi dijalankan, `SchemaResolverService` mengeksekusi kueri ke `system_metadata.db`:
-     `SELECT schema_name FROM public.user_schema_mappings WHERE user_id = :current_user_id;`
-   * Jika record **tidak ditemukan**:
-     * System mernjadwalkan pembentukan UUID v4 acak (contoh: `usr_f47ac10b_58cc_4372_a567_0e02b2c3d479`).
-     * Menyimpan record baru ke `public.user_schema_mappings`.
-     * Menginisialisasi skema baru pada `app_data.db`: `CREATE SCHEMA IF NOT EXISTS "usr_f47ac10b_58cc_4372_a567_0e02b2c3d479";`
-     * Membuat tabel internal pendukung pada skema tersebut (`workflow_task_queue` dan `workflow_execution_logs`).
+#### 3.1.2 Google Authentication Flow
+1. Pengguna menekan tombol **Sign in with Google**; aplikasi memanggil `supabase.auth.signInWithOAuth({ provider: 'google' })`.
+2. Setelah callback sukses, sesi JWT tersimpan dan berisi klaim `sub` (= `user_id`).
+3. `UserService.ensureRegistered()` melakukan *upsert* ke `public.users`: jika `user_id` belum ada, sistem menerbitkan `user_short_uuid` CHAR(8) acak unik (contoh: `u1a2b3c4`) dan menyimpannya.
+
+#### 3.1.3 Project Management Flow
+1. Setelah login, pengguna masuk ke halaman **Project Management**: daftar proyek miliknya dari `public.projects WHERE user_id = :current_user_id AND is_deleted = false`.
+2. **Create Project:** sistem memvalidasi nama, menerbitkan `project_uuid` CHAR(8) acak unik per user (contoh: `p9f8e7d6`), menyimpan `object_prefix = '{user_short_uuid}_{project_uuid}'`, lalu menjalankan provisioning:
+   * Membuat tabel internal awal pada `logic_dev`: `{prefix}_generated_pages`, `{prefix}_workflows`, `{prefix}_page_schema_versions`.
+   * Membuat tabel internal awal pada `data_dev`: `{prefix}_workflow_task_queue`, `{prefix}_workflow_execution_logs`.
+   * Memasang kebijakan RLS pada semua objek baru dengan predikat kepemilikan via `public.projects`.
+3. **Select Project:** `project_id` aktif disimpan pada state global (Zustand); seluruh operasi DAL berikutnya menggunakan `object_prefix` proyek ini.
+4. **Delete Project:** soft-delete (`is_deleted = true`).
+
+#### 3.1.4 Dev-to-Prod Promotion Flow (Push to PROD)
+Push pertama melakukan *structure-only clone*; push berikutnya dieksekusi sebagai *structural migration* — spesifikasi lengkap di §3.6.
+1. Pengguna menekan **Push to PROD** pada halaman Project Management.
+2. Sistem memanggil RPC `public.push_project_to_prod(project_id)` (*security definer*) yang:
+   * Memverifikasi pemilik `project_id` terhadap klaim JWT.
+   * **Push pertama:** kloning struktur setiap objek `{prefix}_*` dari `logic_dev` → `logic_prod` dan `data_dev` → `data_prod` — DDL saja (tabel, view, function/procedure, constraint, index) tanpa data operasional.
+   * **Re-push:** menghitung *structural diff* DEV vs PROD dan menerapkannya sebagai migration (lihat §3.6).
+   * Meng-update `is_pushed_to_prod = true`, `prod_pushed_at = now()` pada `public.projects`.
+3. Seluruh aksi promotion dicatat pada audit log (`public.audit_logs`).
+
+#### 3.1.5 Multi-Tenant Object Isolation Rules
+1. **Ownership Naming Convention:** seluruh objek DB milik aplikasi hasil generasi (table, store proc/function, view, dll.) wajib memakai format `{8_digit_user_short_uuid}_{8digit_project_uuid}_{objek_db_name}` (contoh: `u1a2b3c4_p9f8e7d6_tbl_penjualan`).
 2. **Dynamic DAL Query Transformation:**
-   * Semua kueri DDL/DML ke `app_data.db` **wajib** melewati `QueryBuilderService`.
-   * Setiap referensi tabel bisnis otomatis disisipi prefix skema aktif user:
+   * Semua kueri DDL/DML **wajib** melewati `QueryBuilderService`.
+   * Setiap referensi tabel bisnis otomatis dispesifikasikan skema environment + prefix proyek aktif:
      * *Input Kueri Studio:* `SELECT * FROM tbl_penjualan;`
-     * *Transformed Kueri DAL:* `SELECT * FROM "usr_f47ac10b_58cc_4372_a567_0e02b2c3d479"."tbl_penjualan";`
+     * *Transformed Kueri DAL:* `SELECT * FROM "data_dev"."u1a2b3c4_p9f8e7d6_tbl_penjualan";`
+3. **RLS Enforcement:** setiap objek `{prefix}_*` wajib memiliki kebijakan RLS yang hanya mengizinkan sesi dengan klaim JWT `user_id` pemilik `object_prefix` tersebut (validasi via `public.projects`). Kueri lintas-prefiks diblokir di level database, bukan hanya di DAL.
+4. **Mandatory DAL Routing:** seluruh akses database oleh runtime aplikasi hasil generasi — environment DEV maupun PROD — wajib dirutekan melalui OctaPush DAL:
+   * Klien hanya berkomunikasi dengan endpoint DAL (yang meneruskan JWT user ke Supabase).
+   * Service key / connection string Supabase hanya tersimpan di sisi server DAL dan tidak pernah dibundel ke aplikasi klien.
+   * Node `EXECUTE_SQL` pada Workflow Engine juga dieksekusi melalui DAL, bukan koneksi database langsung dari perangkat pengguna.
+   * Upaya akses langsung ke Supabase dari aplikasi hasil generasi dianggap pelanggaran keamanan dan ditolak (tidak ada kredensial yang tersedia untuk itu).
+
+#### 3.1.6 Session Lifecycle
+1. **Logout:** `supabase.auth.signOut()` menghapus sesi lokal + revoke refresh token di server.
+2. **Auto Refresh:** `supabase.auth.onAuthStateChange` memicu refresh token otomatis sebelum expiry; kegagalan refresh → paksa redirect ke Login.
+3. **Device/Session Revoke:** halaman Settings menampilkan daftar sesi aktif (`auth.sessions`); aksi revoke memanggil `admin.deleteSession` via Edge Function (security definer).
+
+#### 3.1.7 Project Deletion & Cleanup Flow
+1. **Soft Delete:** aksi hapus proyek menandai `is_deleted = true` + `deleted_at = now()`; proyek hilang dari list namun objek DB tetap ada.
+2. **Grace Period:** minimal 30 hari; selama periode ini pemilik dapat restore.
+3. **Hard Delete:** scheduled job (pg_cron harian) memproses proyek yang melewati grace period:
+   * Enumerasi seluruh objek `{prefix}_*` di `logic_dev`, `data_dev`, `logic_prod`, `data_prod` (via `information_schema`/`pg_catalog`) dan DROP satu per satu dalam transaksi per skema.
+   * Hapus attachment di Supabase Storage dengan prefix `{usr8}_{prj8}/`.
+   * Hapus entri `public.projects` terkait (cascade ke registry lain).
+   * Seluruh langkah tercatat di `public.audit_logs`.
+4. Konfirmasi destruktif eksplisit (ketik nama proyek) diminta sebelum soft-delete.
 
 ---
 
@@ -82,7 +128,7 @@ Menyediakan manajemen konfigurasi preferensi visual adaptif (Light Mode, Dark Mo
 
 #### 3.2.2 Functional Logic & State Flow
 1. **Theme State Initialization:**
-   * App membaca `theme_mode` dari `public.user_preferences` di `system_metadata.db`.
+   * App membaca `theme_mode` dari `public.user_preferences` di Supabase.
    * Jika kosong, default bernilai `auto`.
 2. **Resolution Rules:**
    * Jika `theme_mode === 'light'`: Paksa palette `LightTheme`.
@@ -102,7 +148,7 @@ Modul pengelola koneksi LLM dinamis yang mendukung multi-provider (OpenRouter, H
 1. **Form Input Config:**
    * Input Field: `Provider Name`, `Base URL`, `API Key`, `Model Name`.
 2. **Encryption Handler:**
-   * API Key disandi menggunakan AES-256 pada Application Layer sebelum di-persist ke tabel `public.ai_configs` di `system_metadata.db`.
+   * API Key disandi menggunakan AES-256 pada Application Layer sebelum di-persist ke tabel `public.ai_configs` di Supabase.
 3. **Test Connection Logic:**
    * Mengirimkan request ping minimal (`/models` atau `chat/completions` ber-prompt tes) menggunakan kredensial yang diinput.
    * Menampilkan toast feedback: `Success (200 OK)` atau `Failed (HTTP Status Code / Error Message)`.
@@ -122,9 +168,10 @@ Ruang kerja interaktif dual-pane untuk memasukkan prompt, menerima generasi UI/W
   * Memory-based Renderer yang merender JSON skema menjadi komponen React Native/Expo aktual secara instant.
   * Menyediakan toggle pratinjau cepat untuk menguji responsivitas komponen pada tema Light/Dark.
 * **Publish Action Engine:**
-  * Saat tombol **Publish** ditekan:
-    1. Menyimpan metadata ke `public.generated_pages` & `public.workflows`.
-    2. Mengisolasi DDL dan mengeksekusi `CREATE TABLE IF NOT EXISTS` di skema UUID user pada `app_data.db`.
+  * Saat tombol **Publish** ditekan (environment DEV):
+    1. Menyimpan metadata ke `{prefix}_generated_pages` & `{prefix}_workflows` pada `logic_dev`.
+    2. Mengisolasi DDL dan mengeksekusi `CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_{target_table}"` — `target_table` logis otomatis diprefix-kan dengan `object_prefix` proyek aktif.
+    3. Memasang kebijakan RLS berbasis klaim JWT pada tabel yang baru dibuat.
 
 ---
 
@@ -160,102 +207,439 @@ Runtime engine yang mengeksekusi logika bisnis saat form berinteraksi atau pemic
         │                     │                     │
         ▼                     ▼                     ▼
   Evaluasi Bool       Jalankan Query DML      Tampilkan Native
-  Expression          terisolasi di Skema     Toast/Push Alert
-  (True/False)        UUID User                     │
+  Expression          terisolasi pada objek   Toast/Push Alert
+  (True/False)        {usr8}_{prj8}_* di            │
+         │            data_dev/data_prod           │
         │                     │                     │
         └─────────────────────┼─────────────────────┘
                               │
                               ▼
- ┌─────────────────────────────────────────────────────────┐
- │           Write Log to workflow_execution_logs          │
- └─────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────┐
+  │           Write Log to workflow_execution_logs          │
+  └─────────────────────────────────────────────────────────┘
 ```
+
+#### 3.5.3 SQL Guard (Node `EXECUTE_SQL`)
+Sebelum eksekusi, setiap statement `EXECUTE_SQL` wajib melewati `SqlGuardService` di sisi DAL:
+1. **Parse & Whitelist Verb:** hanya `SELECT`, `INSERT`, `UPDATE`, `DELETE`. DDL/DCL (`DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COMMENT`) → ditolak (`ERR_SQL_008`).
+2. **Single Statement:** multi-statement (pemisah `;`) ditolak.
+3. **Object Prefix Validation:** seluruh identifier tabel/view/function yang direferensikan wajib berawalan `{usr8}_{prj8}_` milik proyek aktif; referensi ke objek prefiks lain atau schema lain (`public`, `information_schema`, `pg_catalog`) ditolak.
+4. **Parameter Binding:** nilai payload hanya boleh masuk sebagai bound parameter (`:payload.x`), tidak pernah string-concatenation.
+5. **Statement Timeout:** maksimal 10 detik per statement; pelanggaran menghentikan workflow dengan status `FAILED`.
+6. Pelanggaran guard dicatat sebagai security event di `public.audit_logs` + log eksekusi `FAILED`.
+
+---
+
+### 3.6 Module 6: Schema Evolution & Dev-to-Prod Migration Engine
+
+#### 3.6.1 Overview
+Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubahan form/objek di DEV diterapkan ke PROD sebagai migration terkontrol, bukan clone ulang.
+
+#### 3.6.2 Structural Diff Algorithm
+1. Snapshot struktur tiap environment disimpan pada `{prefix}_schema_snapshots` (`logic_dev`): JSON dump dari `pg_catalog` (kolom, tipe, constraint, index, view def, function signature) per objek.
+2. Saat re-push, sistem membandingkan snapshot DEV terbaru vs snapshot PROD terakhir → menghasilkan daftar operasi:
+   * `ADD_OBJECT`, `ADD_COLUMN` → aman (*auto-apply*).
+   * `ALTER_COLUMN_TYPE`, `DROP_COLUMN`, `DROP_OBJECT`, `RENAME_*` → destruktif, wajib konfirmasi eksplisit + strategi data (misal: rename = `ALTER ... RENAME` + update referensi; drop column = data existing diarsipkan ke tabel `_archive`).
+3. Ringkasan diff dirender di UI (objek baru/diubah/dihapus + badge risiko) sebelum eksekusi; user menyetujui per item atau keseluruhan.
+
+#### 3.6.3 Migration Execution
+1. Operasi dieksekusi dalam satu transaksi per objek; urutan: dependency-aware (function sebelum trigger, tabel parent sebelum child FK).
+2. Setiap eksekusi mencatat entri migration (`{prefix}_migration_history` di `logic_prod`): versi, checksum diff, status, durasi.
+3. Sebelum eksekusi, snapshot struktur PROD saat ini disimpan → *rollback* = re-apply snapshot sebelumnya (atau reverse-DDL untuk perubahan aditif).
+4. Data operasional PROD tidak pernah dimodifikasi oleh migration kecuali transformasi kolom yang secara eksplisit dikonfirmasi.
+
+---
+
+### 3.7 Module 7: Generated App Distribution & End-User Access
+
+#### 3.7.1 Publishing Modes
+| Mode | Auth End-User | Akses |
+|---|---|---|
+| `PRIVATE` | Builder login saja | Default; app hanya terlihat pemilik |
+| `RESTRICTED` | Google Auth (end-user) | Siapa pun yang login via link dapat memakai runtime |
+| `PUBLIC` | Tanpa login | Link publik; submit form anonim dengan rate limit ketat |
+
+#### 3.7.2 Functional Flow
+1. Builder menekan **Publish App** pada proyek ber-status `is_pushed_to_prod = true` dan memilih mode akses.
+2. Sistem menerbitkan `app_slug` unik dan menyimpan konfigurasi distribusi (`public.app_distributions`: `project_id`, `mode`, `slug`, `created_at`, `revoked_at`).
+3. **End-User Session:** sesi end-user dibuat lewat Supabase Auth sama seperti builder, namun JWT di-enrich klaim custom `access_scope = 'app_runtime'` + `project_id`; DAL menolak endpoint Studio untuk scope ini.
+4. **Public Mode:** request anonim membawa context `anon` — DAL memakai service-side connection dengan RLS policy khusus anon yang hanya mengizinkan INSERT pada tabel form target; dilindungi captcha/rate limit.
+5. Seluruh aktivitas end-user tetap melewati OctaPush DAL (aturan §3.1.5 #4).
+
+---
+
+### 3.8 Module 8: Storage, Quota & Observability
+
+#### 3.8.1 File Attachment Storage
+1. Field attachment pada form hasil generasi dipetakan ke Supabase Storage bucket `octapush-app-files`.
+2. Path wajib berformat `{usr8}_{prj8}/{object_name}/{uuid}.{ext}` — upload melalui DAL yang memverifikasi kuota & kepemilikan; akses baca via signed URL berumur pendek.
+3. Hard-delete proyek membersihkan prefix storage terkait (§3.1.7).
+
+#### 3.8.2 Quota Enforcement
+1. Tabel `public.usage_counters` (`user_id PK`, `projects_count`, `db_size_bytes`, `files_count`, `files_bytes`, `updated_at`) — di-update event-driven + rekonsiliasi harian (pg_cron).
+2. DAL memeriksa counter sebelum operasi create/publish/upload; pelanggaran → `ERR_QTA_009` dengan detail kuota yang terlampaui.
+3. Rate limit DAL: token bucket per user/sesi (default: 60 req/menit untuk DML, 10 req/menit untuk DDL/promotion); pelanggaran → HTTP 429.
+
+#### 3.8.3 Audit Log & Observability
+1. `public.audit_logs` (append-only, RLS read-only untuk owner): `id`, `user_id`, `project_id`, `action` (`DDL_EXECUTE`, `PUSH_TO_PROD`, `MIGRATION_APPLY`, `MIGRATION_ROLLBACK`, `HARD_DELETE`, `RLS_REJECT`, `SQL_GUARD_REJECT`, `QUOTA_EXCEED`), `detail_jsonb`, `created_at`.
+2. Dashboard metrik (builder-facing): latency DAL p50/p95, tingkat sukses/gagal workflow, jumlah RLS rejection, pemakaian kuota — bersumber dari `audit_logs` + `workflow_execution_logs`.
+
+#### 3.8.4 Backup & Recovery
+1. Supabase PITR aktif minimal 7 hari untuk seluruh klaster; retensi tambahan via logical dump mingguan `data_prod`.
+2. Prosedur restore terdokumentasi: restore PITR ke branch/klaster staging → verifikasi → promosi. Uji restore dilakukan kuartalan.
+
+#### 3.8.5 Centralized Error Log & Tracing (`public.error_logs`)
+1. **Single Sink:** seluruh sumber error — client SDK, DAL, Workflow Engine, AI Provider Service, DB RPC — wajib melaporkan error ke `public.error_logs` melalui endpoint DAL `POST /errors` (rate-limited, payload disanitasi).
+2. **Konteks Tracing Wajib:** setiap entri membawa `user_id`, `project_id`, `environment`, `source`, `severity`, `error_code` (mapping `ERR_*`), `message`, `stack_trace`, `fingerprint` (hash normalized message+stack), dan `context_jsonb` (page/node/endpoint/device/locale/request id).
+3. **Tracing Flow:** dashboard tracing mengelompokkan entri per `fingerprint` → filter per user/project/severity/rentang waktu → drill-down detail konteks → aksi triage.
+4. **Triage Lifecycle:** status `OPEN` → `INVESTIGATING` → `RESOLVED` | `IGNORED`; perubahan status + `resolution_note` tercatat (oleh builder untuk project-scoped error, oleh platform team untuk platform-scoped); alerting otomatis untuk spike `fingerprint` tertentu atau severity `FATAL`.
+5. **Retention:** entri `RESOLVED`/`IGNORED` diarsipkan setelah 90 hari.
+
+---
+
+### 3.9 Module 9: Security Hardening (Anti-Cheat, XSS, SQL Injection, Abuse)
+
+#### 3.9.1 Defense-in-Depth Layer Map
+| Layer | Mekanisme | Cakupan |
+|---|---|---|
+| Database | RLS berbasis JWT + prefiks objek (§3.1.5) | Semua kueri |
+| Query | SQL Guard (§3.5.3) | Node `EXECUTE_SQL` |
+| Input | Sanitization & Validation Pipeline (§3.9.2) | Studio + generated app |
+| Render | XSS Escaping di Dynamic Renderer (§3.9.3) | Generated app runtime |
+| Transport/App | CSRF token + Security Headers (§3.9.4) | Endpoint mutating + web runtime |
+| Behavior | Anti-Cheat & Anti-Abuse (§3.9.5) | Form submission & workflow |
+
+#### 3.9.2 Input Sanitization & Validation Pipeline
+1. **Server-side Revalidation:** seluruh payload divalidasi ulang di DAL/server meskipun sudah divalidasi di klien (*never trust client*) — tipe, panjang, range, enum, required.
+2. **Sanitization:** string input dibersihkan dari kontrol karakter & tag berbahaya (whitelist-based sanitizer, bukan blacklist); nilai numerik/tanggal diparse ketat.
+3. **File Upload:** validasi MIME type via magic bytes (bukan extension), maksimal ukuran per field, nama file dinormalisasi.
+4. **Parameterized Queries:** semua akses DB via bound parameter — string concatenation dilarang di DAL maupun template workflow.
+
+#### 3.9.3 XSS Protection di Dynamic Renderer
+1. Renderer komponen dinamis **wajib** merender semua konten user sebagai teks/data (React default escaping) — penggunaan `dangerouslySetInnerHTML` / equivalent **dilarang** kecuali konten lolos sanitizer whitelist (DOMPurify-equivalent).
+2. URL/href dari input user divalidasi scheme (`http`/`https` saja; blokir `javascript:`).
+3. Web runtime memakai CSP ketat: `default-src 'self'`, tanpa `unsafe-inline` script.
+
+#### 3.9.4 CSRF & Security Headers
+1. Endpoint mutating (non-GET) DAL memverifikasi CSRF token double-submit atau SameSite=Strict cookie session.
+2. Security headers pada app runtime web: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`.
+
+#### 3.9.5 Anti-Cheat & Anti-Abuse
+1. **Velocity Check:** rate per IP/device/session untuk submit form publik (misal maksimal 10 submit/menit/IP); melebihi → challenge (captcha) atau blokir sementara.
+2. **Business Revalidation:** kalkulasi bisnis-kritis (total, diskon, stok) dieksekusi/direkalkulasi server-side dari data mentah, bukan menerima angka jadi dari klien.
+3. **Idempotency Key:** form submission membawa idempotency key untuk mencegah double-submit/replay.
+4. Seluruh penolakan dicatat sebagai security event: `audit_logs` (`XSS_REJECT`, `ABUSE_REJECT`) + `error_logs` severity `WARN`.
+
+---
+
+### 3.10 Module 10: Internationalization (i18n)
+
+#### 3.10.1 Locale Model
+* Locale didukung (fase awal): `id` (Bahasa Indonesia — **default**) dan `en` (English). Konstanta `SUPPORTED_LOCALES = ['id', 'en']`.
+* Fallback chain: locale aktif → `id`. Key yang hilang dirender apa adanya (`[missing_key]`) di mode development.
+
+#### 3.10.2 Platform UI i18n
+1. Studio/Project Management/Settings memakai `i18next` dengan resource bundle statis per locale; deteksi awal dari device locale, fallback `id`; switcher tersimpan di `public.user_preferences.locale`.
+
+#### 3.10.3 Generated App i18n
+1. **AI Generation Output (opsional):** blok tambahan pada JSON skema:
+   ```json
+   "i18n": {
+     "default_locale": "id",
+     "strings": {
+       "no_faktur.label": { "id": "No Faktur", "en": "Invoice No." },
+       "notify.success":    { "id": "Transaksi Berhasil", "en": "Transaction Saved" }
+     }
+   }
+   ```
+2. String dipersist ke `{usr8}_{prj8}_app_translations` (skema Logic): (`key`, `locale`, `value`) — builder dapat mengedit manual via Translation Editor.
+3. Runtime resolution: label/pesan komponen dinamis dicari di translations sesuai locale end-user → fallback `id` → fallback raw key. Preferensi locale end-user disimpan lokal (client-side).
+4. `LOCAL_NOTIFICATION` node mendukung `message_key` sebagai alternatif `message` literal.
+
+---
+
+### 3.11 Module 11: Realtime Sync, Collaboration & Template Marketplace
+
+#### 3.11.1 Realtime Data Sync
+1. Channel Supabase Realtime per proyek: `project:{project_id}` (Postgres Changes pada objek `{prefix}_*` yang diizinkan RLS).
+2. Dynamic Form Renderer berlangganan perubahan dataset aktif → patch state lokal (last-write-wins per cell/kolom).
+3. Koneksi realtime bersifat best-effort: kegagalan → fallback polling ringan + indikator offline; error tercatat (`ERR_RTM_013`).
+
+#### 3.11.2 Multi-User Project Collaboration
+1. Tabel `public.project_members` (`project_id`, `user_id`, `role` ∈ `owner|editor|viewer`, PK composite); undangan via email Google terdaftar.
+2. RLS/DAL memvalidasi role: `viewer` = read-only Studio; `editor` = edit skema/form/workflow; `owner` = semua + member management + Push to PROD/hard-delete.
+3. Presence: channel presence per project menampilkan kolaborator aktif di Studio (avatar list).
+
+#### 3.11.3 Template Marketplace
+1. **Ekspor:** builder mengekspor proyek sebagai template — snapshot `{prefix}_generated_pages`, `_workflows`, `_page_schema_versions`, `_app_translations` + metadata (nama, deskripsi, versi, author, tags) → `public.templates` + `public.template_items`.
+2. **Instalasi:** pengguna lain menginstal template saat membuat proyek baru → sistem clone struktur Logic template ke prefix proyek baru penerima (tanpa data operasional), lalu provisioning normal berjalan (queue/logs di `data_dev`).
+3. Visibilitas template: `public` (marketplace) atau `private` (hanya undangan); uninstall/delete template tidak memengaruhi proyek yang sudah terinstal.
 
 ---
 
 ## 4. DATABASE SCHEMA SPECIFICATIONS (DDL)
 
-### 4.1 Database 1: `system_metadata.db`
+### 4.1 Schema `public` (Supabase PostgreSQL — Platform Registry)
 
 ```sql
--- Table: user_schema_mappings (Schema Public)
-CREATE TABLE IF NOT EXISTS "user_schema_mappings" (
-  "user_id" TEXT PRIMARY KEY,
-  "schema_name" TEXT NOT NULL UNIQUE,
-  "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+-- Table: users (registry pengguna, sinkron dengan Supabase Auth)
+CREATE TABLE IF NOT EXISTS "public"."users" (
+  "user_id" UUID PRIMARY KEY REFERENCES "auth"."users"("id") ON DELETE CASCADE,
+  "email" TEXT NOT NULL,
+  "display_name" TEXT,
+  "user_short_uuid" CHAR(8) NOT NULL UNIQUE CHECK ("user_short_uuid" ~ '^[0-9a-f]{8}$'),
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
 
--- Table: ai_configs
-CREATE TABLE IF NOT EXISTS "ai_configs" (
-  "id" TEXT PRIMARY KEY,
-  "user_id" TEXT NOT NULL,
+-- Table: projects (mapping user ↔ project + status environment)
+CREATE TABLE IF NOT EXISTS "public"."projects" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "user_id" UUID NOT NULL REFERENCES "public"."users"("user_id") ON DELETE CASCADE,
+  "project_name" TEXT NOT NULL,
+  "project_uuid" CHAR(8) NOT NULL CHECK ("project_uuid" ~ '^[0-9a-f]{8}$'),
+  -- object_prefix dihitung via trigger BEFORE INSERT/UPDATE (join antar tabel
+  -- tidak didukung generated column), lalu disimpan denormalized + UNIQUE:
+  "object_prefix" TEXT NOT NULL UNIQUE,
+  "is_pushed_to_prod" BOOLEAN DEFAULT false,
+  "prod_pushed_at" TIMESTAMPTZ,
+  "is_deleted" BOOLEAN DEFAULT false,
+  "deleted_at" TIMESTAMPTZ,
+  "created_at" TIMESTAMPTZ DEFAULT now(),
+  UNIQUE ("user_id", "project_uuid")
+);
+
+-- Trigger: hitung & kunci object_prefix = users.user_short_uuid || '_' || project_uuid
+-- CREATE FUNCTION public.set_object_prefix() ... BEFORE INSERT OR UPDATE ON public.projects
+--   SELECT u.user_short_uuid INTO short FROM public.users u WHERE u.user_id = NEW.user_id;
+--   NEW.object_prefix := short || '_' || NEW.project_uuid;
+
+-- Table: app_distributions (mode akses app hasil generate)
+CREATE TABLE IF NOT EXISTS "public"."app_distributions" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "project_id" UUID NOT NULL REFERENCES "public"."projects"("id") ON DELETE CASCADE,
+  "slug" TEXT NOT NULL UNIQUE,
+  "mode" TEXT NOT NULL CHECK ("mode" IN ('PRIVATE','RESTRICTED','PUBLIC')),
+  "revoked_at" TIMESTAMPTZ,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: usage_counters (kuota per user, event-driven + rekonsiliasi harian)
+CREATE TABLE IF NOT EXISTS "public"."usage_counters" (
+  "user_id" UUID PRIMARY KEY REFERENCES "public"."users"("user_id") ON DELETE CASCADE,
+  "projects_count" INTEGER DEFAULT 0,
+  "db_size_bytes" BIGINT DEFAULT 0,
+  "files_count" BIGINT DEFAULT 0,
+  "files_bytes" BIGINT DEFAULT 0,
+  "updated_at" TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: audit_logs (append-only; no UPDATE/DELETE via revoke)
+CREATE TABLE IF NOT EXISTS "public"."audit_logs" (
+  "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  "user_id" UUID NOT NULL,
+  "project_id" UUID,
+  "action" TEXT NOT NULL CHECK ("action" IN
+    ('DDL_EXECUTE','PUSH_TO_PROD','MIGRATION_APPLY','MIGRATION_ROLLBACK',
+     'HARD_DELETE','RLS_REJECT','SQL_GUARD_REJECT','QUOTA_EXCEED',
+     'XSS_REJECT','ABUSE_REJECT')),
+  "detail_jsonb" JSONB,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+REVOKE UPDATE, DELETE ON "public"."audit_logs" FROM PUBLIC;
+
+-- Table: project_members (multi-user collaboration per project)
+CREATE TABLE IF NOT EXISTS "public"."project_members" (
+  "project_id" UUID NOT NULL REFERENCES "public"."projects"("id") ON DELETE CASCADE,
+  "user_id" UUID NOT NULL REFERENCES "public"."users"("user_id") ON DELETE CASCADE,
+  "role" TEXT NOT NULL DEFAULT 'viewer' CHECK ("role" IN ('owner','editor','viewer')),
+  "invited_by" UUID REFERENCES "public"."users"("user_id"),
+  "created_at" TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY ("project_id", "user_id")
+);
+
+-- Table: error_logs (centralized error sink untuk tracing & triage)
+CREATE TABLE IF NOT EXISTS "public"."error_logs" (
+  "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  "user_id" UUID,                          -- nullable utk anon/public app
+  "project_id" UUID,                       -- nullable utk platform-level error
+  "environment" TEXT NOT NULL DEFAULT 'DEV' CHECK ("environment" IN ('DEV','PROD','PLATFORM')),
+  "source" TEXT NOT NULL CHECK ("source" IN ('CLIENT','DAL','WORKFLOW','AI_PROVIDER','DB')),
+  "severity" TEXT NOT NULL DEFAULT 'ERROR' CHECK ("severity" IN ('DEBUG','INFO','WARN','ERROR','FATAL')),
+  "error_code" TEXT,                       -- mapping ERR_* codes
+  "message" TEXT NOT NULL,
+  "stack_trace" TEXT,
+  "fingerprint" TEXT NOT NULL,             -- hash(normalized message + stack top frame)
+  "session_id" TEXT,
+  "request_id" TEXT,
+  "context_jsonb" JSONB,                   -- page/node/endpoint/device/locale dll.
+  "status" TEXT NOT NULL DEFAULT 'OPEN' CHECK ("status" IN ('OPEN','INVESTIGATING','RESOLVED','IGNORED')),
+  "resolution_note" TEXT,
+  "resolved_by" UUID,
+  "resolved_at" TIMESTAMPTZ,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_error_logs_fingerprint ON "public"."error_logs" ("fingerprint", "created_at");
+CREATE INDEX IF NOT EXISTS idx_error_logs_user_project ON "public"."error_logs" ("user_id", "project_id", "created_at");
+
+-- Table: templates + template_items (marketplace)
+CREATE TABLE IF NOT EXISTS "public"."templates" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "author_user_id" UUID NOT NULL REFERENCES "public"."users"("user_id"),
+  "name" TEXT NOT NULL,
+  "description" TEXT,
+  "version" INTEGER NOT NULL DEFAULT 1,
+  "tags" TEXT[] DEFAULT '{}',
+  "visibility" TEXT NOT NULL DEFAULT 'private' CHECK ("visibility" IN ('public','private')),
+  "revoked_at" TIMESTAMPTZ,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "public"."template_items" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "template_id" UUID NOT NULL REFERENCES "public"."templates"("id") ON DELETE CASCADE,
+  "item_type" TEXT NOT NULL CHECK ("item_type" IN ('PAGE','WORKFLOW','SCHEMA_VERSION','TRANSLATION')),
+  "payload_json" JSONB NOT NULL
+);
+
+-- Table: ai_configs (user-level)
+CREATE TABLE IF NOT EXISTS "public"."ai_configs" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "user_id" UUID NOT NULL,
   "provider_name" TEXT NOT NULL,
   "base_url" TEXT NOT NULL,
-  "api_key" TEXT NOT NULL,
+  "api_key" TEXT NOT NULL, -- encrypted (AES-256 application layer)
   "model_name" TEXT NOT NULL,
-  "is_active" INTEGER DEFAULT 0,
-  FOREIGN KEY("user_id") REFERENCES "user_schema_mappings"("user_id")
+  "is_active" BOOLEAN DEFAULT false,
+  FOREIGN KEY("user_id") REFERENCES "public"."users"("user_id") ON DELETE CASCADE
 );
 
--- Table: user_preferences
-CREATE TABLE IF NOT EXISTS "user_preferences" (
-  "user_id" TEXT PRIMARY KEY,
-  "theme_mode" TEXT DEFAULT 'auto',
-  "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY("user_id") REFERENCES "user_schema_mappings"("user_id")
+-- Table: user_preferences (user-level)
+CREATE TABLE IF NOT EXISTS "public"."user_preferences" (
+  "user_id" UUID PRIMARY KEY,
+  "theme_mode" TEXT DEFAULT 'auto' CHECK ("theme_mode" IN ('light','dark','auto')),
+  "locale" TEXT DEFAULT 'id' CHECK ("locale" IN ('id','en')), -- i18n platform UI
+  "updated_at" TIMESTAMPTZ DEFAULT now(),
+  FOREIGN KEY("user_id") REFERENCES "public"."users"("user_id") ON DELETE CASCADE
 );
 
--- Table: generated_pages
-CREATE TABLE IF NOT EXISTS "generated_pages" (
-  "id" TEXT PRIMARY KEY,
-  "user_id" TEXT NOT NULL,
+-- RPC: Push to PROD (structure-only clone), security definer + verifikasi JWT owner
+-- CREATE OR REPLACE FUNCTION "public"."push_project_to_prod"(p_project_id UUID) ...
+```
+
+> **Catatan:** `object_prefix` dihitung oleh trigger `set_object_prefix()` (join `users.user_short_uuid`) lalu disimpan denormalized dengan constraint UNIQUE — bukan generated column, karena PostgreSQL tidak mendukung subquery/join antar tabel di generated column.
+
+---
+
+### 4.2 Schemas `logic_dev` / `logic_prod` (Per-Project Design Artifacts)
+
+Template DDL provisioning saat proyek baru dibuat (`{prefix}` = `{usr8}_{prj8}`, contoh `u1a2b3c4_p9f8e7d6`):
+
+```sql
+-- Table: {prefix}_generated_pages (di logic_dev; dikloning ke logic_prod saat Push to PROD)
+CREATE TABLE IF NOT EXISTS "logic_dev"."{prefix}_generated_pages" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   "page_title" TEXT NOT NULL,
-  "page_type" TEXT NOT NULL,
+  "page_type" TEXT NOT NULL CHECK ("page_type" IN ('MASTER','TRANSACTION','REPORT')),
   "target_table" TEXT NOT NULL,
   "current_version" INTEGER DEFAULT 1,
-  "is_published" INTEGER DEFAULT 0,
-  "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+  "is_published" BOOLEAN DEFAULT false,
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
 
--- Table: workflows
-CREATE TABLE IF NOT EXISTS "workflows" (
-  "id" TEXT PRIMARY KEY,
-  "user_id" TEXT NOT NULL,
+-- Table: {prefix}_workflows
+CREATE TABLE IF NOT EXISTS "logic_dev"."{prefix}_workflows" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   "workflow_name" TEXT NOT NULL,
-  "trigger_type" TEXT NOT NULL,
-  "trigger_config" TEXT NOT NULL,
-  "workflow_json" TEXT NOT NULL,
-  "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+  "trigger_type" TEXT NOT NULL CHECK ("trigger_type" IN ('FORM_EVENT','SCHEDULER','QUEUE','MANUAL')),
+  "trigger_config" JSONB NOT NULL,
+  "workflow_json" JSONB NOT NULL,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: {prefix}_page_schema_versions (rollback versioning)
+CREATE TABLE IF NOT EXISTS "logic_dev"."{prefix}_page_schema_versions" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "page_id" UUID NOT NULL REFERENCES "logic_dev"."{prefix}_generated_pages"("id") ON DELETE CASCADE,
+  "version" INTEGER NOT NULL,
+  "schema_json" JSONB NOT NULL,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: {prefix}_app_translations (i18n: locale id/en, fallback id)
+CREATE TABLE IF NOT EXISTS "logic_dev"."{prefix}_app_translations" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "key" TEXT NOT NULL,
+  "locale" TEXT NOT NULL CHECK ("locale" IN ('id','en')),
+  "value" TEXT NOT NULL,
+  "updated_at" TIMESTAMPTZ DEFAULT now(),
+  UNIQUE ("key", "locale")
+);
+
+-- Table: {prefix}_schema_snapshots (structural diff untuk migration DEV↔PROD)
+CREATE TABLE IF NOT EXISTS "logic_dev"."{prefix}_schema_snapshots" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "environment" TEXT NOT NULL CHECK ("environment" IN ('DEV','PROD')),
+  "snapshot_json" JSONB NOT NULL,
+  "created_at" TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: {prefix}_migration_history (di logic_prod; hasil re-push/migration)
+CREATE TABLE IF NOT EXISTS "logic_prod"."{prefix}_migration_history" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "diff_checksum" TEXT NOT NULL,
+  "operations_json" JSONB NOT NULL,
+  "status" TEXT NOT NULL CHECK ("status" IN ('APPLIED','ROLLED_BACK','FAILED')),
+  "duration_ms" INTEGER,
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
 ```
 
 ---
 
-### 4.2 Database 2: `app_data.db` (User Schema Level Template)
+### 4.3 Schemas `data_dev` / `data_prod` (Per-Project Business Data)
 
-Setiap skema UUID pengguna yang baru dibentuk akan memuat struktur dasar internal sebagai berikut:
+Struktur dasar internal setiap proyek baru:
 
 ```sql
--- Template DDL untuk eksekusi pada skema UUID spesifik: "{schema_name}"
+-- Template DDL untuk eksekusi pada environment DEV: "{prefix}" = "{usr8}_{prj8}"
 
-CREATE TABLE IF NOT EXISTS "{schema_name}"."workflow_task_queue" (
-  "id" TEXT PRIMARY KEY,
-  "workflow_id" TEXT NOT NULL,
-  "payload_json" TEXT NOT NULL,
-  "status" TEXT DEFAULT 'PENDING',
+CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_workflow_task_queue" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "workflow_id" UUID NOT NULL,
+  "payload_json" JSONB NOT NULL,
+  "status" TEXT DEFAULT 'PENDING' CHECK ("status" IN ('PENDING','PROCESSING','COMPLETED','FAILED')),
   "retry_count" INTEGER DEFAULT 0,
-  "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS "{schema_name}"."workflow_execution_logs" (
-  "id" TEXT PRIMARY KEY,
-  "workflow_id" TEXT NOT NULL,
-  "status" TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_workflow_execution_logs" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "workflow_id" UUID NOT NULL,
+  "status" TEXT NOT NULL CHECK ("status" IN ('SUCCESS','FAILED')),
   "execution_time_ms" INTEGER NOT NULL,
-  "log_details" TEXT,
-  "executed_at" DATETIME DEFAULT CURRENT_TIMESTAMP
+  "log_details" JSONB,
+  "executed_at" TIMESTAMPTZ DEFAULT now()
 );
+
+-- Contoh tabel bisnis dinamis hasil Publish:
+-- CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_tbl_penjualan" (...);
+
+-- RLS isolation template (wajib dipasang pada SETIAP objek {prefix}_*):
+ALTER TABLE "data_dev"."{prefix}_tbl_penjualan" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "{prefix}_owner_only" ON "data_dev"."{prefix}_tbl_penjualan"
+  FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM "public"."projects" p
+      JOIN "public"."users" u ON u."user_id" = p."user_id"
+      WHERE p."object_prefix" = '{prefix}'
+        AND u."user_id" = auth.uid()
+        AND p."is_deleted" = false
+    )
+  );
 ```
+
+> **Push to PROD:** seluruh objek `{prefix}_*` dari `logic_dev`/`data_dev` dikloning struktur (DDL saja) ke `logic_prod`/`data_prod` oleh RPC `public.push_project_to_prod`, termasuk replikasi kebijakan RLS. Data operasional tidak ikut disalin.
 
 ---
 
@@ -291,7 +675,7 @@ Format validasi skema JSON yang dikembalikan oleh AI LLM dan wajib diproses oleh
                     "label": { "type": "string" },
                     "component": { 
                       "type": "string", 
-                      "enum": ["TextInput", "NumberInput", "SelectInput", "DatePicker", "SwitchInput"] 
+                      "enum": ["TextInput", "NumberInput", "SelectInput", "DatePicker", "SwitchInput", "FileInput"] 
                     },
                     "required": { "type": "boolean" },
                     "default_value": { "type": ["string", "number", "boolean", "null"] }
@@ -331,6 +715,7 @@ Format validasi skema JSON yang dikembalikan oleh AI LLM dan wajib diproses oleh
                 "expression": { "type": "string" },
                 "sql": { "type": "string" },
                 "message": { "type": "string" },
+                "message_key": { "type": "string", "description": "i18n key alternatif untuk message literal (locale: id/en, fallback id)" },
                 "on_true": { "type": ["string", "null"] },
                 "on_false": { "type": ["string", "null"] },
                 "next": { "type": ["string", "null"] }
@@ -340,6 +725,23 @@ Format validasi skema JSON yang dikembalikan oleh AI LLM dan wajib diproses oleh
           }
         },
         "required": ["workflow_name", "trigger", "nodes"]
+      }
+    },
+    "i18n": {
+      "type": "object",
+      "description": "Opsional. Locale didukung: id (default), en.",
+      "properties": {
+        "default_locale": { "type": "string", "enum": ["id", "en"] },
+        "strings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "en": { "type": "string" }
+            }
+          }
+        }
       }
     }
   },
@@ -353,7 +755,53 @@ Format validasi skema JSON yang dikembalikan oleh AI LLM dan wajib diproses oleh
 
 | Error Code | Category | Cause / Trigger | System Action / User Feedback |
 |---|---|---|---|
-| `ERR_SEC_001` | Multi-Tenant | `user_id` gagal dipetakan ke `schema_name` UUID | System memicu auto-retry pembentukan UUID pada `user_schema_mappings`. |
+| `ERR_AUT_000` | Authentication | Sesi tidak valid / login Google dibatalkan / JWT expired | Mengarahkan pengguna kembali ke halaman Login; refresh token dicoba otomatis bila memungkinkan. |
+| `ERR_SEC_001` | Multi-Tenant | `user_id` gagal dipetakan ke `user_short_uuid` pada `public.users` | System memicu auto-retry penerbitan short UUID dan upsert ulang. |
+| `ERR_PRJ_005` | Project Management | Nama proyek kosong/duplikat atau gagal provisioning objek awal | Menampilkan alert di halaman Project Management; provisioning di-rollback (objek parsial dihapus). |
+| `ERR_PRM_006` | Promotion | Push to PROD gagal (struktur DEV/PROD divergen atau RPC error) | Proses dihentikan sebelum commit; user diberi tahu untuk sinkronisasi ulang; audit log mencatat kegagalan. |
+| `ERR_RLS_007` | Multi-Tenant | Akses ditolak RLS — percobaan konsumsi objek milik user/proyek lain | Diblokir di level database; dicatat sebagai security event; pesan generik "Akses ditolak" ke user. |
 | `ERR_DAL_002` | Database | Eksekusi DML pada tabel bisnis yang belum di-publish | Menampilkan alert: "Tabel bisnis belum diinisialisasi. Silakan Publish halaman terlebih dahulu." |
 | `ERR_AIC_003` | AI Provider | Timeout / Invalid API Key saat melakukan kueri LLM | Menampilkan banner error pada Studio Chat & mengizinkan konfigurasi ulang di Settings. |
-| `ERR_WFE_004` | Workflow Engine | Evaluasi sintaks `CONDITION` invalid atau SQL Syntax error | Menghentikan eksekusi node, mencatat status `FAILED` ke `workflow_execution_logs`, dan mengirimkan notifikasi error ke user. |
+| `ERR_WFE_004` | Workflow Engine | Evaluasi sintaks `CONDITION` invalid atau SQL Syntax error | Menghentikan eksekusi node, mencatat status `FAILED` ke `{prefix}_workflow_execution_logs`, dan mengirimkan notifikasi error ke user. |
+| `ERR_SQL_008` | SQL Guard | Statement `EXECUTE_SQL` memuat verb terlarang (DDL/DCL), multi-statement, atau mereferensikan objek di luar prefiks proyek | Eksekusi diblokir sebelum menyentuh DB; dicatat sebagai `SQL_GUARD_REJECT` di `public.audit_logs`; pesan generik ke user. |
+| `ERR_QTA_009` | Quota | Kuota terlampaui (jumlah proyek, ukuran DB, attachment, rate limit DAL) | Operasi ditolak dengan HTTP 429 / alert; dashboard menampilkan kuota yang terlampaui. |
+| `ERR_MIG_010` | Migration | Re-push gagal: diff konflik, migration error, atau timeout | Transaksi per objek di-rollback; snapshot PROD tetap utuh; user diminta review ulang diff; tercatat di `{prefix}_migration_history`. |
+| `ERR_DST_011` | Distribution | Akses runtime oleh scope yang tidak sah (`access_scope ≠ app_runtime`) atau slug revoked | Endpoint runtime menolak request; dicatat sebagai security event di audit log. |
+| `ERR_XSS_012` | Security Hardening | Input mengandung konten berbahaya (tag/script/scheme terlarang) atau MIME file tidak valid | Input ditolak/disanitasi; dicatat sebagai `XSS_REJECT`; pesan validasi ke user. |
+| `ERR_ABU_013` | Security Hardening | Velocity/abuse check terlampaui (spam submit, replay tanpa idempotency key, automasi) | Challenge captcha / blokir sementara; dicatat sebagai `ABUSE_REJECT`. |
+| `ERR_RTM_014` | Realtime | Koneksi Supabase Realtime gagal/terputus | Fallback polling ringan + indikator offline di UI; retry eksponensial. |
+| `ERR_I18N_015` | Internationalization | Translation key/locale tidak ditemukan | Fallback ke locale default (`id`) → raw key; tidak menghentikan render. |
+| `ERR_MKT_016` | Marketplace | Instalasi template gagal (template revoked, konflik objek, versi tidak kompatibel) | Instalasi dibatalkan sebelum commit; provisioning proyek baru di-rollback bersih. |
+
+---
+
+## 7. CODING STANDARDS & EXCEPTION HANDLING POLICY (MANDATORY TRY-CATCH)
+
+Aturan ini mengikat **seluruh kode platform OctaPush** dan **seluruh artefak logika yang dihasilkan engine** (workflow runner templates, Edge Functions, DAL handlers).
+
+### 7.1 Mandatory Rules
+1. **Try-Catch Wajib:** setiap fungsi/service yang melakukan operasi berisiko (DB access, network call, file I/O, parsing, eksekusi workflow node) **wajib** membungkus operasinya dalam `try-catch`.
+2. **No Empty Catch:** `catch` kosong atau yang hanya me-swallow error **dilarang**. Setiap catch minimal melakukan salah satu: (a) log ke Centralized Error Log lalu rethrow, atau (b) menangani secara eksplisit dengan fallback yang terdefinisi.
+3. **Log Before Rethrow:** pola standar:
+   ```typescript
+   try {
+     await dal.query(...);
+   } catch (err) {
+     await ErrorLogService.report(err, {
+       project_id, environment, source: 'DAL',
+       context: { endpoint, request_id },
+     });
+     throw new AppError('ERR_DAL_002', err); // typed rethrow
+   }
+   ```
+4. **Typed Errors:** semua throw menggunakan kelas `AppError(error_code, cause)` — mapping ke tabel error codes §6; raw exception tidak boleh lolos ke boundary.
+5. **Async Discipline:** operasi asinkron wajib di-`await` di dalam blok try; unhandled promise rejection diperlakukan sebagai bug P1.
+6. **UI Boundary:** React tree dilindungi `ErrorBoundary` per route/per panel dinamis; crash panel tidak boleh menjatuhkan seluruh app.
+7. **Workflow Nodes:** setiap node dieksekusi dalam try-catch individual; kegagalan node mencatat status `FAILED` + detail langkah ke `{prefix}_workflow_execution_logs` DAN `public.error_logs`.
+8. **SQL Layer:** RPC/function PL/pgSQL yang ditulis engine memakai blok `EXCEPTION WHEN ... THEN` untuk menuliskan konteks error sebelum raise ulang.
+
+### 7.2 Review & Enforcement Plan
+1. **Static Analysis:** ESLint rules custom — melarang empty catch (`no-empty`), mewajibkan `AppError` pada throw (`no-throw-literal`), deteksi floating promise (`no-floating-promises`).
+2. **CI Gate:** PR dengan pelanggaran rule di atas gagal lint/typecheck; tidak bisa di-merge.
+3. **Runtime Safety Net:** global handler (`unhandledRejection`, `uncaughtException`, ErrorBoundary) sebagai lapisan terakhir — tetap wajib log ke `error_logs` sebelum graceful shutdown/recover.
+4. Code review checklist memuat butir verifikasi try-catch & logging pada setiap PR.
