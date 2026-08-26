@@ -97,12 +97,26 @@ Push pertama melakukan *structure-only clone*; push berikutnya dieksekusi sebaga
    * Setiap referensi tabel bisnis otomatis dispesifikasikan skema environment + prefix proyek aktif:
      * *Input Kueri Studio:* `SELECT * FROM tbl_penjualan;`
      * *Transformed Kueri DAL:* `SELECT * FROM "data_dev"."u1a2b3c4_p9f8e7d6_tbl_penjualan";`
-3. **RLS Enforcement:** setiap objek `{prefix}_*` wajib memiliki kebijakan RLS yang hanya mengizinkan sesi dengan klaim JWT `user_id` pemilik `object_prefix` tersebut (validasi via `public.projects`). Kueri lintas-prefiks diblokir di level database, bukan hanya di DAL.
+3. **RLS Enforcement (sederhana & berperforma):**
+   * Setiap objek `{prefix}_*` **wajib** memiliki kolom ownership terdenormalisasi `owner_user_id` (UUID) dan `project_id` (UUID) yang diisi saat provisioning/INSERT — **tanpa subquery join** ke `public.projects`.
+   * Policy standar yang dipasang ke setiap objek:
+     ```sql
+     ALTER TABLE "data_dev"."{prefix}_tbl_x" ENABLE ROW LEVEL SECURITY;
+     CREATE POLICY "{prefix}_owner_only" ON "data_dev"."{prefix}_tbl_x"
+       FOR ALL USING ("owner_user_id" = auth.uid())
+       WITH CHECK ("owner_user_id" = auth.uid());
+     ```
+   * Kolom ownership ditulis otomatis oleh DAL (nilai dari JWT + proyek aktif), bukan dari payload klien; dilarang di-override oleh input user.
+   * Kueri lintas-prefiks diblokir di level database (policy) maupun DAL. Validasi kepemilikan berat (join `public.projects`) hanya dipakai untuk operasi kontrol (member mgmt, promotion) yang jarang.
 4. **Mandatory DAL Routing:** seluruh akses database oleh runtime aplikasi hasil generasi — environment DEV maupun PROD — wajib dirutekan melalui OctaPush DAL:
    * Klien hanya berkomunikasi dengan endpoint DAL (yang meneruskan JWT user ke Supabase).
    * Service key / connection string Supabase hanya tersimpan di sisi server DAL dan tidak pernah dibundel ke aplikasi klien.
    * Node `EXECUTE_SQL` pada Workflow Engine juga dieksekusi melalui DAL, bukan koneksi database langsung dari perangkat pengguna.
    * Upaya akses langsung ke Supabase dari aplikasi hasil generasi dianggap pelanggaran keamanan dan ditolak (tidak ada kredensial yang tersedia untuk itu).
+5. **Connection Pooling:** DAL memakai PgBouncer *transaction mode*; prepared statements dihindari pada sesi panjang; ukuran pool dibatasi dan dipantau agar tidak terjadi *connection exhaustion*.
+6. **Identifier Length Guard:** PostgreSQL membatasi identifier maksimal 63 karakter; karena prefix `{usr8}_{prj8}_` = 17 karakter, maka `objek_db_name` **wajib ≤ 46 karakter**. Saat generate/publish:
+   * Nama objek > 46 karakter → AI diminta meringkas; bila tetap melampaui, DAL menerapkan *hash-truncate* deterministik (`{46-char-prefix}_{hash8}`) untuk menjamin unik.
+   * Validasi dilakukan sebelum DDL dieksekusi (di generator dan DAL); constraint UNIQUE tetap menjadi safety net terakhir.
 
 #### 3.1.6 Session Lifecycle
 1. **Logout:** `supabase.auth.signOut()` menghapus sesi lokal + revoke refresh token di server.
@@ -173,6 +187,23 @@ Ruang kerja interaktif dual-pane untuk memasukkan prompt, menerima generasi UI/W
     2. Mengisolasi DDL dan mengeksekusi `CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_{target_table}"` — `target_table` logis otomatis diprefix-kan dengan `object_prefix` proyek aktif.
     3. Memasang kebijakan RLS berbasis klaim JWT pada tabel yang baru dibuat.
 
+#### 3.4.3 Starter Use-Cases (Galeri Kasus Pakai)
+1. **Konsep:** galeri use-case kurasi di dalam Studio. Bukan template artefak (tanpa clone struktur) — melainkan kumpulan *prompt siap kirim* berkualitas yang memandu AI menghasilkan aplikasi sesuai kasus pakai umum.
+2. **Alur:** user menekan kartu use-case → chat input terisi `prompt_text` (locale aktif) → user dapat mengedit sebelum kirim → AI generate → alur normal (preview → publish).
+3. **Data Model:** tabel `public.starter_use_cases`:
+   | Column | Type | Description |
+   |---|---|---|
+   | `id` | UUID PK | |
+   | `title` | TEXT | Judul (per locale) |
+   | `description` | TEXT | Deskripsi singkat (per locale) |
+   | `category` | TEXT | Kelompok (misal: `sales`, `education`, `inventory`, `hr`, `finance`) |
+   | `icon` | TEXT | Nama ikon UI |
+   | `prompt_text` | JSONB | `{ "id": "...", "en": "..." }` prompt siap kirim |
+   | `is_active` | BOOLEAN | Tampil/tidak |
+   | `sort_order` | INTEGER | Urutan tampil |
+4. **Isi awal (contoh umum):** aplikasi penjualan/kasir, data siswa/akademik, inventori gudang, absensi karyawan, perpustakaan, booking/pemesanan, kas/keuangan mini — masing-masing bilingual `id`/`en`.
+5. **Pengelolaan:** daftar dikelola sebagai data (seed/migration), bukan hardcode kode — mudah ditambah tanpa rilis ulang.
+
 ---
 
 ### 3.5 Module 5: Dynamic Runtime & Event-Driven Workflow Engine
@@ -225,8 +256,9 @@ Sebelum eksekusi, setiap statement `EXECUTE_SQL` wajib melewati `SqlGuardService
 2. **Single Statement:** multi-statement (pemisah `;`) ditolak.
 3. **Object Prefix Validation:** seluruh identifier tabel/view/function yang direferensikan wajib berawalan `{usr8}_{prj8}_` milik proyek aktif; referensi ke objek prefiks lain atau schema lain (`public`, `information_schema`, `pg_catalog`) ditolak.
 4. **Parameter Binding:** nilai payload hanya boleh masuk sebagai bound parameter (`:payload.x`), tidak pernah string-concatenation.
-5. **Statement Timeout:** maksimal 10 detik per statement; pelanggaran menghentikan workflow dengan status `FAILED`.
-6. Pelanggaran guard dicatat sebagai security event di `public.audit_logs` + log eksekusi `FAILED`.
+5. **Dry-run & Cost Guard (R5):** statement yang berpotensi memengaruhi banyak baris (UPDATE/DELETE tanpa `WHERE`, atau WHERE on non-indexed) wajib di-*preview* dengan `EXPLAIN` — estimasi baris terdampak dan cost ditampilkan ke builder untuk konfirmasi; melampaui ambang (misal perkiraan > 10.000 baris) ditolak tanpa konfirmasi eksplisit.
+6. **Statement Timeout:** maksimal 10 detik per statement; pelanggaran menghentikan workflow dengan status `FAILED`.
+7. Pelanggaran guard dicatat sebagai security event di `public.audit_logs` + log eksekusi `FAILED`.
 
 ---
 
@@ -243,10 +275,13 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 3. Ringkasan diff dirender di UI (objek baru/diubah/dihapus + badge risiko) sebelum eksekusi; user menyetujui per item atau keseluruhan.
 
 #### 3.6.3 Migration Execution
-1. Operasi dieksekusi dalam satu transaksi per objek; urutan: dependency-aware (function sebelum trigger, tabel parent sebelum child FK).
-2. Setiap eksekusi mencatat entri migration (`{prefix}_migration_history` di `logic_prod`): versi, checksum diff, status, durasi.
-3. Sebelum eksekusi, snapshot struktur PROD saat ini disimpan → *rollback* = re-apply snapshot sebelumnya (atau reverse-DDL untuk perubahan aditif).
-4. Data operasional PROD tidak pernah dimodifikasi oleh migration kecuali transformasi kolom yang secara eksplisit dikonfirmasi.
+1. **Project Lock:** saat push dimulai, sistem mengunci proyek (`public.projects.promotion_lock = now()`); seluruh operasi edit struktur DEV (publish, update form/workflow, DDL) ditolak (`ERR_MIG_017`) sampai push selesai atau timeout (misal 10 menit).
+2. **Checksum Verification:** sebelum menerapkan diff, sistem memverifikasi bahwa snapshot DEV yang dijadikan dasar diff **belum berubah** (checksum snapshot masih sama); jika berubah selama proses → batal, user diminta menjalankan ulang push.
+3. Operasi dieksekusi dalam satu transaksi per objek; urutan: dependency-aware (function sebelum trigger, tabel parent sebelum child FK).
+4. Setiap eksekusi mencatat entri migration (`{prefix}_migration_history` di `logic_prod`): versi, checksum diff, status, durasi.
+5. Sebelum eksekusi, snapshot struktur PROD saat ini disimpan → *rollback* = re-apply snapshot sebelumnya (atau reverse-DDL untuk perubahan aditif).
+6. Data operasional PROD tidak pernah dimodifikasi oleh migration kecuali transformasi kolom yang secara eksplisit dikonfirmasi.
+7. Setelah selesai/gagal, `promotion_lock` dibersihkan.
 
 ---
 
@@ -264,7 +299,11 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 2. Sistem menerbitkan `app_slug` unik dan menyimpan konfigurasi distribusi (`public.app_distributions`: `project_id`, `mode`, `slug`, `created_at`, `revoked_at`).
 3. **End-User Session:** sesi end-user dibuat lewat Supabase Auth sama seperti builder, namun JWT di-enrich klaim custom `access_scope = 'app_runtime'` + `project_id`; DAL menolak endpoint Studio untuk scope ini.
 4. **Public Mode:** request anonim membawa context `anon` — DAL memakai service-side connection dengan RLS policy khusus anon yang hanya mengizinkan INSERT pada tabel form target; dilindungi captcha/rate limit.
-5. Seluruh aktivitas end-user tetap melewati OctaPush DAL (aturan §3.1.5 #4).
+5. **Anti-Abuse Khusus Mode Publik (R11):**
+   * **Honeypot field:** setiap form publik menyertakan field tersembunyi (tidak terlihat user) — jika terisi bot → submit dibuang tanpa eksekusi.
+   * **Kuota submit anonim:** per IP + device fingerprint (misal 10 submit/jam/IP), melebihi → blokir sementara + notifikasi builder.
+   * **Moderation queue (opsional):** untuk konten publik yang disubmit, builder dapat mengaktifkan antrean moderasi sebelum data tampil/aktif.
+6. Seluruh aktivitas end-user tetap melewati OctaPush DAL (aturan §3.1.5 #4).
 
 ---
 
@@ -276,9 +315,12 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 3. Hard-delete proyek membersihkan prefix storage terkait (§3.1.7).
 
 #### 3.8.2 Quota Enforcement
-1. Tabel `public.usage_counters` (`user_id PK`, `projects_count`, `db_size_bytes`, `files_count`, `files_bytes`, `updated_at`) — di-update event-driven + rekonsiliasi harian (pg_cron).
+1. Tabel `public.usage_counters` (`user_id PK`, `projects_count`, `db_size_bytes`, `files_count`, `files_bytes`, `objects_count`, `updated_at`) — di-update event-driven + rekonsiliasi harian (pg_cron).
 2. DAL memeriksa counter sebelum operasi create/publish/upload; pelanggaran → `ERR_QTA_009` dengan detail kuota yang terlampaui.
-3. Rate limit DAL: token bucket per user/sesi (default: 60 req/menit untuk DML, 10 req/menit untuk DDL/promotion); pelanggaran → HTTP 429.
+3. **Kuota objek per proyek (R12):** maksimal 200 objek dinamis per proyek (gabungan tabel, view, function, trigger, index di `logic_dev`+`data_dev`+`data_prod`); melebihi → DDL ditolak.
+4. **Monitoring catalog (R12):** rekonsiliasi harian membandingkan `usage_counters.objects_count` dengan jumlah aktual di `pg_class` per prefix; anomali > 10% trigger alert.
+5. **Proyek dormant (R12):** proyek tanpa aktivitas > 6 bulan (tidak ada Publish, edit, submit di DEV/PROD) ditandai `is_dormant = true`; objek dapat di-*freeze* (dicadangkan ke dump, dihapus dari skema, dikembalikan jika user re-aktivasi).
+6. Rate limit DAL: token bucket per user/sesi (default: 60 req/menit untuk DML, 10 req/menit untuk DDL/promotion); pelanggaran → HTTP 429.
 
 #### 3.8.3 Audit Log & Observability
 1. `public.audit_logs` (append-only, RLS read-only untuk owner): `id`, `user_id`, `project_id`, `action` (`DDL_EXECUTE`, `PUSH_TO_PROD`, `MIGRATION_APPLY`, `MIGRATION_ROLLBACK`, `HARD_DELETE`, `RLS_REJECT`, `SQL_GUARD_REJECT`, `QUOTA_EXCEED`), `detail_jsonb`, `created_at`.
@@ -291,9 +333,11 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 #### 3.8.5 Centralized Error Log & Tracing (`public.error_logs`)
 1. **Single Sink:** seluruh sumber error — client SDK, DAL, Workflow Engine, AI Provider Service, DB RPC — wajib melaporkan error ke `public.error_logs` melalui endpoint DAL `POST /errors` (rate-limited, payload disanitasi).
 2. **Konteks Tracing Wajib:** setiap entri membawa `user_id`, `project_id`, `environment`, `source`, `severity`, `error_code` (mapping `ERR_*`), `message`, `stack_trace`, `fingerprint` (hash normalized message+stack), dan `context_jsonb` (page/node/endpoint/device/locale/request id).
-3. **Tracing Flow:** dashboard tracing mengelompokkan entri per `fingerprint` → filter per user/project/severity/rentang waktu → drill-down detail konteks → aksi triage.
-4. **Triage Lifecycle:** status `OPEN` → `INVESTIGATING` → `RESOLVED` | `IGNORED`; perubahan status + `resolution_note` tercatat (oleh builder untuk project-scoped error, oleh platform team untuk platform-scoped); alerting otomatis untuk spike `fingerprint` tertentu atau severity `FATAL`.
-5. **Retention:** entri `RESOLVED`/`IGNORED` diarsipkan setelah 90 hari.
+3. **PII Scrubbing (R7):** sebelum insert, pipeline `ErrorLogService` menjalankan scrubber — pola sensitif (email, token/API key, password, no. identitas, nomor kartu) pada `message`, `stack_trace`, dan `context_jsonb` diganti `[REDACTED]`; payload request mentah **tidak pernah** ditulis utuh.
+4. **Dedup & Sampling (R7):** error dengan `fingerprint` sama dalam jendela 5 menit di-agregasi — insert pertama, update counter `occurrence_count` + `last_seen_at` pada berikutnya; antarmuka tracing menampilkan jumlah kejadian, bukan ratusan baris identik.
+5. **Tracing Flow:** dashboard tracing mengelompokkan entri per `fingerprint` → filter per user/project/severity/rentang waktu → drill-down detail konteks → aksi triage.
+6. **Triage Lifecycle:** status `OPEN` → `INVESTIGATING` → `RESOLVED` | `IGNORED`; perubahan status + `resolution_note` tercatat (oleh builder untuk project-scoped error, oleh platform team untuk platform-scoped); alerting otomatis untuk spike `fingerprint` tertentu atau severity `FATAL`.
+7. **Retention:** entri `RESOLVED`/`IGNORED` diarsipkan setelah 90 hari.
 
 ---
 
@@ -356,24 +400,34 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 3. Runtime resolution: label/pesan komponen dinamis dicari di translations sesuai locale end-user → fallback `id` → fallback raw key. Preferensi locale end-user disimpan lokal (client-side).
 4. `LOCAL_NOTIFICATION` node mendukung `message_key` sebagai alternatif `message` literal.
 
+#### 3.10.4 Timezone Policy
+1. **Storage:** seluruh timestamp disimpan sebagai `TIMESTAMPTZ` (UTC) — tidak ada penyimpanan waktu lokal.
+2. **Display:** konversi ke timezone end-user hanya dilakukan di layer render (klien); UI menampilkan waktu lokal device, tanpa menampilkan offset mentah.
+3. **Business Logic (laporan, filter tanggal, scheduler):** memakai **timezone proyek** — kolom `public.projects.timezone` (default `Asia/Jakarta`) — sehingga agregasi harian/mingguan konsisten antar user tanpa bergantung timezone device masing-masing.
+4. **Trigger `SCHEDULER`:** dihitung terhadap timezone proyek, bukan UTC mentah.
+5. Konversi memakai library timezone-aware (`date-fns-tz` / `luxon`); aturan berlaku untuk platform UI maupun generated app.
+
 ---
 
 ### 3.11 Module 11: Realtime Sync, Collaboration & Template Marketplace
 
 #### 3.11.1 Realtime Data Sync
-1. Channel Supabase Realtime per proyek: `project:{project_id}` (Postgres Changes pada objek `{prefix}_*` yang diizinkan RLS).
-2. Dynamic Form Renderer berlangganan perubahan dataset aktif → patch state lokal (last-write-wins per cell/kolom).
-3. Koneksi realtime bersifat best-effort: kegagalan → fallback polling ringan + indikator offline; error tercatat (`ERR_RTM_013`).
+1. **Mekanisme:** DB trigger (`AFTER INSERT/UPDATE/DELETE`) pada setiap objek `{prefix}_*` yang relevan → memanggil `realtime.broadcast_changes()` dengan payload berisi `project_id`, `action`, `table_name`, `key`, `fields_changed`. Klien subscribe ke channel `project:{project_id}`.
+2. **Keunggulan vs Postgres Changes (watch langsung):** biaya tetap & prediktibel per broadcast, tidak bergantung pada jumlah tabel yang di-watch; scalable untuk ribuan objek dinamis; tidak ada *listener exhaustion* seperti Postgres Changes di skala besar.
+3. **Fallback:** jika koneksi realtime terputus → polling ringan (GET endpoint DAL dengan `?since=last_known_ts`) + indikator offline; error tercatat (`ERR_RTM_014`).
+4. **Keamanan:** channel realtime bersifat *private* — hanya user dengan JWT yang memiliki `project_id` (via `project_members` untuk kolaborasi, atau RLS ownership untuk runtime) dapat subscribe; payload broadcast tetap memuat `owner_user_id` yang diverifikasi di sisi klien.
 
 #### 3.11.2 Multi-User Project Collaboration
 1. Tabel `public.project_members` (`project_id`, `user_id`, `role` ∈ `owner|editor|viewer`, PK composite); undangan via email Google terdaftar.
 2. RLS/DAL memvalidasi role: `viewer` = read-only Studio; `editor` = edit skema/form/workflow; `owner` = semua + member management + Push to PROD/hard-delete.
 3. Presence: channel presence per project menampilkan kolaborator aktif di Studio (avatar list).
+4. **Konflik Edit (R9):** v1 menggunakan *last-write-wins* yang eksplisit — saat editor membuka halaman yang sedang diedit editor lain, UI menampilkan *presence warning* ("sedang diedit oleh X"); saat menyimpan, sistem mengecek `current_version` halaman — jika berubah sejak dibuka, ditampilkan diff + konfirmasi overwrite sebelum disimpan. v2 (future): optimistic locking via kolom `version` pada `{prefix}_generated_pages` (simpan ditolak jika versi basi).
 
 #### 3.11.3 Template Marketplace
-1. **Ekspor:** builder mengekspor proyek sebagai template — snapshot `{prefix}_generated_pages`, `_workflows`, `_page_schema_versions`, `_app_translations` + metadata (nama, deskripsi, versi, author, tags) → `public.templates` + `public.template_items`.
+1. **Ekspor:** builder mengekspor proyek sebagai template — snapshot `{prefix}_generated_pages`, `_workflows`, `_page_schema_versions`, `_app_translations` + metadata (nama, deskripsi, versi, `schema_version` = engine version saat ekspor, author, tags) → `public.templates` + `public.template_items`.
 2. **Instalasi:** pengguna lain menginstal template saat membuat proyek baru → sistem clone struktur Logic template ke prefix proyek baru penerima (tanpa data operasional), lalu provisioning normal berjalan (queue/logs di `data_dev`).
-3. Visibilitas template: `public` (marketplace) atau `private` (hanya undangan); uninstall/delete template tidak memengaruhi proyek yang sudah terinstal.
+3. **Version Guard (R10):** installer memverifikasi `templates.schema_version` — jika > versi engine saat ini, instalasi ditolak dengan pesan: "Template dibuat di versi OctaPush yang lebih baru. Silakan update aplikasi OctaPush terlebih dahulu." Jika versi lama, instalasi tetap berjalan dengan peringatan "Template ini dibuat di versi OctaPush {old}. Beberapa fitur mungkin tidak tersedia."
+4. Visibilitas template: `public` (marketplace) atau `private` (hanya undangan); uninstall/delete template tidak memengaruhi proyek yang sudah terinstal.
 
 ---
 
@@ -402,6 +456,8 @@ CREATE TABLE IF NOT EXISTS "public"."projects" (
   "object_prefix" TEXT NOT NULL UNIQUE,
   "is_pushed_to_prod" BOOLEAN DEFAULT false,
   "prod_pushed_at" TIMESTAMPTZ,
+  "timezone" TEXT DEFAULT 'Asia/Jakarta', -- timezone proyek utk laporan/filter/scheduler (S6)
+  "promotion_lock" TIMESTAMPTZ,           -- lock saat push/migration berjalan (R4)
   "is_deleted" BOOLEAN DEFAULT false,
   "deleted_at" TIMESTAMPTZ,
   "created_at" TIMESTAMPTZ DEFAULT now(),
@@ -428,6 +484,7 @@ CREATE TABLE IF NOT EXISTS "public"."usage_counters" (
   "user_id" UUID PRIMARY KEY REFERENCES "public"."users"("user_id") ON DELETE CASCADE,
   "projects_count" INTEGER DEFAULT 0,
   "db_size_bytes" BIGINT DEFAULT 0,
+  "objects_count" BIGINT DEFAULT 0,   -- jumlah objek dinamis per user (R12)
   "files_count" BIGINT DEFAULT 0,
   "files_bytes" BIGINT DEFAULT 0,
   "updated_at" TIMESTAMPTZ DEFAULT now()
@@ -473,6 +530,8 @@ CREATE TABLE IF NOT EXISTS "public"."error_logs" (
   "request_id" TEXT,
   "context_jsonb" JSONB,                   -- page/node/endpoint/device/locale dll.
   "status" TEXT NOT NULL DEFAULT 'OPEN' CHECK ("status" IN ('OPEN','INVESTIGATING','RESOLVED','IGNORED')),
+  "occurrence_count" INTEGER DEFAULT 1,  -- dedup fingerprint (R7)
+  "last_seen_at" TIMESTAMPTZ DEFAULT now(),
   "resolution_note" TEXT,
   "resolved_by" UUID,
   "resolved_at" TIMESTAMPTZ,
@@ -488,6 +547,7 @@ CREATE TABLE IF NOT EXISTS "public"."templates" (
   "name" TEXT NOT NULL,
   "description" TEXT,
   "version" INTEGER NOT NULL DEFAULT 1,
+  "schema_version" TEXT NOT NULL,        -- engine version saat ekspor (R10)
   "tags" TEXT[] DEFAULT '{}',
   "visibility" TEXT NOT NULL DEFAULT 'private' CHECK ("visibility" IN ('public','private')),
   "revoked_at" TIMESTAMPTZ,
@@ -499,6 +559,19 @@ CREATE TABLE IF NOT EXISTS "public"."template_items" (
   "template_id" UUID NOT NULL REFERENCES "public"."templates"("id") ON DELETE CASCADE,
   "item_type" TEXT NOT NULL CHECK ("item_type" IN ('PAGE','WORKFLOW','SCHEMA_VERSION','TRANSLATION')),
   "payload_json" JSONB NOT NULL
+);
+
+-- Table: starter_use_cases (galeri prompt siap kirim di Studio — S5)
+CREATE TABLE IF NOT EXISTS "public"."starter_use_cases" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "title" JSONB NOT NULL,            -- { "id": "...", "en": "..." }
+  "description" JSONB,
+  "category" TEXT,
+  "icon" TEXT,
+  "prompt_text" JSONB NOT NULL,      -- { "id": "...", "en": "..." }
+  "is_active" BOOLEAN DEFAULT true,
+  "sort_order" INTEGER DEFAULT 0,
+  "created_at" TIMESTAMPTZ DEFAULT now()
 );
 
 -- Table: ai_configs (user-level)
@@ -621,22 +694,19 @@ CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_workflow_execution_logs" (
   "executed_at" TIMESTAMPTZ DEFAULT now()
 );
 
--- Contoh tabel bisnis dinamis hasil Publish:
--- CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_tbl_penjualan" (...);
+-- Contoh tabel bisnis dinamis hasil Publish (memuat kolom ownership terdenormalisasi):
+-- CREATE TABLE IF NOT EXISTS "data_dev"."{prefix}_tbl_penjualan" (
+--   "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   "owner_user_id" UUID NOT NULL,   -- ditulis DAL dari JWT, bukan payload
+--   "project_id" UUID NOT NULL,      -- proyek aktif, bukan payload
+--   ... kolom bisnis ...
+-- );
 
 -- RLS isolation template (wajib dipasang pada SETIAP objek {prefix}_*):
 ALTER TABLE "data_dev"."{prefix}_tbl_penjualan" ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "{prefix}_owner_only" ON "data_dev"."{prefix}_tbl_penjualan"
-  FOR ALL
-  USING (
-    EXISTS (
-      SELECT 1 FROM "public"."projects" p
-      JOIN "public"."users" u ON u."user_id" = p."user_id"
-      WHERE p."object_prefix" = '{prefix}'
-        AND u."user_id" = auth.uid()
-        AND p."is_deleted" = false
-    )
-  );
+  FOR ALL USING ("owner_user_id" = auth.uid())
+  WITH CHECK ("owner_user_id" = auth.uid());
 ```
 
 > **Push to PROD:** seluruh objek `{prefix}_*` dari `logic_dev`/`data_dev` dikloning struktur (DDL saja) ke `logic_prod`/`data_prod` oleh RPC `public.push_project_to_prod`, termasuk replikasi kebijakan RLS. Data operasional tidak ikut disalin.
@@ -766,6 +836,7 @@ Format validasi skema JSON yang dikembalikan oleh AI LLM dan wajib diproses oleh
 | `ERR_SQL_008` | SQL Guard | Statement `EXECUTE_SQL` memuat verb terlarang (DDL/DCL), multi-statement, atau mereferensikan objek di luar prefiks proyek | Eksekusi diblokir sebelum menyentuh DB; dicatat sebagai `SQL_GUARD_REJECT` di `public.audit_logs`; pesan generik ke user. |
 | `ERR_QTA_009` | Quota | Kuota terlampaui (jumlah proyek, ukuran DB, attachment, rate limit DAL) | Operasi ditolak dengan HTTP 429 / alert; dashboard menampilkan kuota yang terlampaui. |
 | `ERR_MIG_010` | Migration | Re-push gagal: diff konflik, migration error, atau timeout | Transaksi per objek di-rollback; snapshot PROD tetap utuh; user diminta review ulang diff; tercatat di `{prefix}_migration_history`. |
+| `ERR_MIG_017` | Migration | Proyek sedang di-lock oleh push/migration lain (promotion_lock aktif) | Operasi edit struktur DEV ditolak sementara; UI menampilkan indikator "sedang Push to PROD" + estimasi waktu. |
 | `ERR_DST_011` | Distribution | Akses runtime oleh scope yang tidak sah (`access_scope ≠ app_runtime`) atau slug revoked | Endpoint runtime menolak request; dicatat sebagai security event di audit log. |
 | `ERR_XSS_012` | Security Hardening | Input mengandung konten berbahaya (tag/script/scheme terlarang) atau MIME file tidak valid | Input ditolak/disanitasi; dicatat sebagai `XSS_REJECT`; pesan validasi ke user. |
 | `ERR_ABU_013` | Security Hardening | Velocity/abuse check terlampaui (spam submit, replay tanpa idempotency key, automasi) | Challenge captcha / blokir sementara; dicatat sebagai `ABUSE_REJECT`. |
@@ -805,3 +876,8 @@ Aturan ini mengikat **seluruh kode platform OctaPush** dan **seluruh artefak log
 2. **CI Gate:** PR dengan pelanggaran rule di atas gagal lint/typecheck; tidak bisa di-merge.
 3. **Runtime Safety Net:** global handler (`unhandledRejection`, `uncaughtException`, ErrorBoundary) sebagai lapisan terakhir — tetap wajib log ke `error_logs` sebelum graceful shutdown/recover.
 4. Code review checklist memuat butir verifikasi try-catch & logging pada setiap PR.
+
+### 7.3 Architecture Decision Records (ADR)
+1. Setiap **keputusan arsitektur mayor** (pola isolasi tenant, strategi realtime, skema penamaan, pilihan library inti, dsb.) wajib dicatat sebagai ADR di folder `docs/adr/` repo dengan format: *Konteks → Keputusan → Konsekuensi*.
+2. ADR bersifat *immutable*: keputusan yang dibatalkan tidak diedit, melainkan ditandai *superseded* oleh ADR baru.
+3. Referensi ADR terkait dicantumkan pada PR yang mengimplementasikan perubahan arsitektural tersebut.

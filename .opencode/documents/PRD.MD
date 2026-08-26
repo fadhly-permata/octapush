@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS "data_dev"."u1a2b3c4_p9f8e7d6_tbl_master_supplier" (
 
 ### Module 2: Security & Multi-Tenant Object Isolation
 * **Ownership Naming Convention:** Seluruh objek DB aplikasi (table, store proc/function, view, dll.) memakai format `{8_digit_user_short_uuid}_{8digit_project_uuid}_{objek_db_name}` pada skema `logic_dev`/`data_dev`/`logic_prod`/`data_prod`.
+* **Identifier Length Guard:** Nama objek dibatasi ≤ 46 karakter (total ≤ 63 char Postgres); nama lebih panjang diringkas AI atau di-hash-truncate oleh DAL.
 * **Mandatory DAL Routing:** Aplikasi hasil generasi **selalu** mengakses database melalui OctaPush DAL — tidak ada kredensial/koneksi langsung ke Supabase yang diekspos ke aplikasi, baik di environment DEV maupun PROD.
 * **Isolated Data Access Layer (DAL):** Semua query database ditempelkan awalan (*prefixed*) `object_prefix` proyek aktif secara otomatis; kontrak API DAL terdokumentasi formal.
 * **Row Level Security Enforcement:** Kebijakan RLS berbasis klaim JWT memastikan user/kode tidak dapat mengonsumsi objek milik user/proyek lain.
@@ -246,6 +247,7 @@ CREATE TABLE IF NOT EXISTS "data_dev"."u1a2b3c4_p9f8e7d6_tbl_master_supplier" (
 ### Module 5: OctaPush Generation Studio
 * **Split View / Mobile Sheet:** Dual pane untuk Chat & Live Theme-Aware Preview.
 * **Contextual Refinement:** Obrolan multi-turn untuk penyempurnaan UI & logika workflow.
+* **Starter Use-Cases (Galeri Kasus Pakai):** Galeri use-case kurasi (misal: aplikasi penjualan/kasir, data siswa, inventori, absensi, perpustakaan, booking, kas mini) — user tap → chat input terisi prompt siap kirim → AI generate langsung. Daftar diisi via data (`public.starter_use_cases`), bukan kode.
 * **Publish to DEV:** DDL dieksekusi ke `logic_dev`/`data_dev` dengan prefiks proyek aktif.
 * **File Attachments:** Field attachment pada form tersimpan di Supabase Storage dengan path berprefiks proyek.
 
@@ -260,6 +262,7 @@ CREATE TABLE IF NOT EXISTS "data_dev"."u1a2b3c4_p9f8e7d6_tbl_master_supplier" (
 ### Module 8: Generated App Distribution & End-User Access
 * **Publishing Modes:** Public Link (tanpa login), Restricted (end-user login Google), atau Private (pemilik saja).
 * **End-User Identity:** Sesi end-user terpisah dari builder, dengan `access_scope` terbatas pada runtime aplikasi terkait; seluruh aktivitas tetap via DAL + RLS.
+* **Anti-Abuse Mode Publik:** Honeypot field, kuota submit anonim per IP/device, dan moderation queue opsional untuk konten publik.
 
 ### Module 9: Quota, Observability & Operations
 * **Quota Enforcement:** Kuota per user (jumlah proyek, ukuran DB, attachment, rate limit DAL) dengan error `ERR_QTA_009`.
@@ -271,10 +274,11 @@ CREATE TABLE IF NOT EXISTS "data_dev"."u1a2b3c4_p9f8e7d6_tbl_master_supplier" (
 * **2 Locale (fase awal):** `id` (Bahasa Indonesia, default) dan `en` (English).
 * **Generated App i18n:** AI dapat menghasilkan blok `"i18n"` pada JSON skema; string dikelola pada `{usr8}_{prj8}_app_translations`; runtime merender sesuai locale end-user dengan fallback ke default.
 * **Platform UI Locale:** Studio, Project Management, dan Settings tersedia dalam `id` & `en`.
+* **Timezone Policy:** Semua timestamp disimpan UTC; laporan & filter menggunakan timezone proyek (default Asia/Jakarta); scheduler cron dieksekusi berdasarkan timezone proyek.
 
 ### Module 11: Realtime Sync, Collaboration & Marketplace
 * **Realtime Data Sync:** Update form/data realtime via Supabase Realtime pada objek prefiks proyek (RLS-aware), tanpa refresh manual.
-* **Multi-User Collaboration:** Undang kolaborator per proyek dengan role `owner`/`editor`/`viewer` (`public.project_members`); presence indicator di Studio.
+* **Multi-User Collaboration:** Undang kolaborator per proyek dengan role `owner`/`editor`/`viewer` (`public.project_members`); presence indicator di Studio; konflik edit ditangani LWW + presence warning (optimistic locking sebagai peningkatan berikutnya).
 * **Template Marketplace:** Ekspor proyek sebagai template + instalasi ke proyek baru (clone struktur Logic ke prefix baru); metadata template (nama, deskripsi, versi, author).
 
 ### Module 12: Dynamic Runtime & Workflow Execution Engine

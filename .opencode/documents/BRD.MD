@@ -195,6 +195,7 @@ Pengembangan aplikasi internal enterprise (seperti form input data master, modul
 * **NFR-SEC-03:** Autentikasi **wajib** melewati Supabase Auth (Google OAuth); seluruh akses database membawa JWT sesi login sehingga kebijakan RLS dapat memverifikasi identitas pemilik objek.
 * **NFR-SEC-04:** Environment PROD (`logic_prod`/`data_prod`) hanya boleh dimodifikasi melalui proses *Push to PROD* yang terekam audit-nya; operasi DDL manual langsung ke PROD dari sisi klien **dilarang**.
 * **NFR-SEC-05:** Kredensial database Supabase (service key/connection string) hanya boleh berada di sisi server DAL OctaPush dan tidak pernah diekspos ke klien maupun dibundel ke dalam aplikasi hasil generasi.
+* **NFR-SEC-06 (PII di Log):** Data Pribadi (PII) yang tertangkap dalam `public.error_logs` (message, stack trace, context) **wajib** di-scrub (`[REDACTED]`) sebelum dipersist; payload request mentah tidak boleh disimpan utuh di log.
 
 ### 5.2 Performance & Responsiveness
 * **NFR-PER-01:** Pratinjau komponen UI dinamis (*Live Preview*) **harus** dirender kurang dari **200 md** setelah JSON skema selesai diproses oleh memori lokal.
@@ -206,6 +207,7 @@ Pengembangan aplikasi internal enterprise (seperti form input data master, modul
 * **NFR-MNT-02:** Arsitektur terbagi dengan jelas antara modul UI, Data Access Layer (DAL), AI Parser Engine, dan Workflow Execution Runtime.
 * **NFR-MNT-03:** Kontrak API DAL didokumentasikan secara formal (endpoint, format request/response, error codes, idempotency, pagination) dan di-*versioning*.
 * **NFR-MNT-04 (Exception Handling Policy / Mandatory Try-Catch):** Seluruh kode yang ditulis — baik kode platform OctaPush maupun artefak logika yang dihasilkan engine — **wajib** membungkus operasi berisiko dalam `try-catch`; dilarang *empty catch*; setiap catch **wajib** mencatat error ke Centralized Error Log (`public.error_logs`) sebelum rethrow sebagai typed error atau penanganan yang eksplisit. Aturan lengkap di FSD §7.
+* **NFR-MNT-05 (Portabilitas):** Akses ke layanan eksternal (database, auth, storage, realtime) **wajib** melalui abstraction layer milik sendiri; fitur vendor-spesifik dibatasi seminimal mungkin, dan dump database harus dapat direstore ke PostgreSQL standar (bukan hanya Supabase) serta diverifikasi berkala.
 
 ### 5.4 Operations & Reliability
 * **NFR-OPS-01:** Seluruh operasi database terstruktur (DDL, migration, promotion) terekam pada audit log yang immutable (append-only).

@@ -1,7 +1,7 @@
 # Usulan & Risk Register — Menunggu Diskusi
 
-> Status: draft diskusi bersama. Item sudah dibahas: **S1 ✅ masuk PRD**, **S2 ⏸️ tunda (sedang didiskusikan)**.
-> Item di bawah ini BELUM disetujui — menunggu konfirmasi satu-per-satu.
+> Status: semua item sudah dibahas & diimplementasikan (✅) kecuali **S2 ⏸️** yang ditunda.
+> Item di bawah ini mencatat hasil keputusan + target dokumen.
 
 ---
 
@@ -57,5 +57,20 @@
 | Item | Keputusan | Catatan |
 |---|---|---|
 | S1 Phasing MVP | ✅ Masuk PRD | Section baru "Implementation Phasing" F1–F5 |
-| S2 Threat Modeling | ⏸️ Tunda / sedang didiskusi | User ingin bahas lebih dalam dulu |
+| S2 Threat Modeling | ⏸️ Tunda | User ingin bahas lebih dalam dulu — tetap di usulan, belum masuk dokumen |
 | S3 Load Test Gate | ✅ Masuk BRD + PRD | NFR-PER-03 di BRD; acceptance gate fase F1 di PRD §7 — sudah diimplementasikan |
+| S4 ADR | ✅ Masuk FSD | Mandat ADR di FSD §7.3 (immutable, format Konteks→Keputusan→Konsekuensi) — sudah diimplementasikan |
+| S5 Starter Use-Cases | ✅ Masuk PRD + FSD | Galeri prompt siap kirim (`public.starter_use_cases`) di Studio — PRD Module 5 + FSD §3.4.3 — sudah diimplementasikan |
+| S6 Timezone Policy | ✅ Masuk FSD + PRD | UTC storage, render device, timezone proyek (default Asia/Jakarta) untuk laporan/filter/cron — FSD §3.10.4 + DDL + PRD bullet — sudah diimplementasikan |
+| R1 Performa RLS | ✅ Masuk FSD | Denormalisasi `owner_user_id`/`project_id` + policy `auth.uid() = owner_user_id` + connection pooling — FSD §3.1.5 rule 3+5 + template DDL §4.3 — sudah diimplementasikan |
+| R2 Panjang Identifier | ✅ Masuk FSD + PRD | Guard ≤46 char, hash-truncate fallback — FSD §3.1.5 rule 6 + PRD Module 2 bullet — sudah diimplementasikan |
+| R3 Strategi Realtime | ✅ Masuk FSD | Ganti Postgres Changes → DB trigger broadcast_changes + channel per project — FSD §3.11.1 revisi — sudah diimplementasikan |
+| R4 Konflik Migration | ✅ Masuk FSD | Project lock (`promotion_lock`) + checksum verification + ERR_MIG_017 — FSD §3.6.3 + DDL — sudah diimplementasikan |
+| R5 SQL Berbahaya | ✅ Masuk FSD | Dry-run EXPLAIN + ambang baris terdampak sebelum DML bulk — FSD §3.5.3 rule 5 — sudah diimplementasikan |
+| R6 Pool Exhaustion | ✅ Ter-cover R1 | Connection pooling rule sudah masuk FSD §3.1.5 rule 5 — tanpa edit tambahan |
+| R7 Error Log PII | ✅ Masuk FSD + BRD | PII scrubbing + dedup fingerprint (`occurrence_count`) — FSD §3.8.5 + DDL + BRD NFR-SEC-06 — sudah diimplementasikan |
+| R8 Vendor Lock-in | ✅ Masuk BRD | NFR-MNT-05 portabilitas: DAL abstraction + test restore ke Postgres vanilla berkala — sudah diimplementasikan |
+| R9 Konflik Edit | ✅ Masuk FSD + PRD | LWW eksplisit + presence warning + version check; optimistic locking future — FSD §3.11.2 + PRD Module 11 — sudah diimplementasikan |
+| R10 Template Version | ✅ Masuk FSD | `schema_version` stamp + installer version guard — FSD §3.11.3 + DDL templates — sudah diimplementasikan |
+| R11 Public Abuse | ✅ Masuk FSD + PRD | Honeypot field, kuota anonim per IP/device, moderation queue — FSD §3.7.2 + PRD Module 8 — sudah diimplementasikan |
+| R12 Catalog Bloat | ✅ Masuk FSD + BRD | Kuota max 200 objek/proyek, monitoring count, arsip dormant — FSD §3.8.2 + DDL usage_counters + BRD FR-QTA-01 — sudah diimplementasikan |
