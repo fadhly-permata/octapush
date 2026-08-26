@@ -2,6 +2,12 @@
 
 Every user request in this project MUST have a report file. Write the report twice: once at the START of the request, once updated at the END (request = one user message plus all tool calls that follow it).
 
+## Exceptions (no report needed)
+
+- Request whose ONLY action is `git commit` and/or `git push` — skip report entirely. No file created.
+- Rationale: commit/push requests are pure bookkeeping with no repo-side work to describe.
+- If the request ALSO does real work (code edits, docs, config, analysis) before/after the commit, a report IS required.
+
 ## Location & filename
 
 - Path: `.opencode/reports/{request_type}/{ddmmyy}/{hhmm}_{short_desc}.md`
