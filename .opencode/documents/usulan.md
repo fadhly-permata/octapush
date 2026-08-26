@@ -1,6 +1,6 @@
 # Usulan & Risk Register — Menunggu Diskusi
 
-> Status: semua item sudah dibahas & diimplementasikan (✅) kecuali **S2 ⏸️** yang ditunda.
+> Status: semua item sudah dibahas & diimplementasikan (✅). Tidak ada item tertunda.
 > Item di bawah ini mencatat hasil keputusan + target dokumen.
 
 ---
@@ -57,7 +57,7 @@
 | Item | Keputusan | Catatan |
 |---|---|---|
 | S1 Phasing MVP | ✅ Masuk PRD | Section baru "Implementation Phasing" F1–F5 |
-| S2 Threat Modeling | ⏸️ Tunda | User ingin bahas lebih dalam dulu — tetap di usulan, belum masuk dokumen |
+| S2 Threat Modeling | ✅ Masuk FSD | Mandat STRIDE sebelum rilis DAL v1 + re-evaluasi tiap perubahan arsitektur besar — FSD §3.9.6 — sudah diimplementasikan |
 | S3 Load Test Gate | ✅ Masuk BRD + PRD | NFR-PER-03 di BRD; acceptance gate fase F1 di PRD §7 — sudah diimplementasikan |
 | S4 ADR | ✅ Masuk FSD | Mandat ADR di FSD §7.3 (immutable, format Konteks→Keputusan→Konsekuensi) — sudah diimplementasikan |
 | S5 Starter Use-Cases | ✅ Masuk PRD + FSD | Galeri prompt siap kirim (`public.starter_use_cases`) di Studio — PRD Module 5 + FSD §3.4.3 — sudah diimplementasikan |

@@ -374,6 +374,11 @@ Menangani evolusi struktur aplikasi hasil generasi setelah push pertama: perubah
 3. **Idempotency Key:** form submission membawa idempotency key untuk mencegah double-submit/replay.
 4. Seluruh penolakan dicatat sebagai security event: `audit_logs` (`XSS_REJECT`, `ABUSE_REJECT`) + `error_logs` severity `WARN`.
 
+#### 3.9.6 Threat Modeling Requirement (Input S2)
+1. Sebelum rilis DAL v1, **wajib** dilakukan sesi *threat modeling* menggunakan kerangka STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) yang mencakup seluruh endpoint DAL dan surface generasi aplikasi.
+2. Output wajib: dokumen STRIDE per endpoint (ancaman → mitigasi existing → gap → rekomendasi) dan *sign-off* oleh tim keamanan sebelum DAL v1 dianggap *production-ready*.
+3. Threat modeling diulang setiap ada perubahan arsitektur yang signifikan (penambahan mode publik, realtime, kolaborasi multi-user).
+
 ---
 
 ### 3.10 Module 10: Internationalization (i18n)
