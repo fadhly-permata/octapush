@@ -245,8 +245,13 @@ Mapping user ↔ project dan status environment proyek.
 | `object_prefix` | TEXT | NOT NULL, UNIQUE | Hasil gabungan `{user_short_uuid}_{project_uuid}` |
 | `is_pushed_to_prod` | BOOLEAN | DEFAULT false | Status apakah struktur sudah di-clone ke PROD |
 | `prod_pushed_at` | TIMESTAMPTZ | NULLABLE | Waktu Push to PROD terakhir |
+| `timezone` | TEXT | DEFAULT 'Asia/Jakarta' | Timezone proyek untuk laporan/filter/scheduler |
+| `promotion_lock` | TIMESTAMPTZ | NULLABLE | Lock saat push/migration berjalan |
 | `is_deleted` | BOOLEAN | DEFAULT false | Flag soft-delete |
+| `deleted_at` | TIMESTAMPTZ | NULLABLE | Waktu soft-delete |
 | `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp pembuatan proyek |
+
+> `object_prefix` dihitung oleh trigger `set_object_prefix()` (join `users.user_short_uuid`) lalu disimpan denormalized dengan constraint UNIQUE — bukan generated column (PostgreSQL tidak mendukung subquery antar tabel di generated column). Detail lengkap: FSD §4.1.
 
 #### 3. Table `ai_configs`
 Menyimpan kredensial dan konfigurasi AI LLM per pengguna.
@@ -269,6 +274,113 @@ Menyimpan konfigurasi aplikasi termasuk *Theme Engine*.
 | `user_id` | UUID | PRIMARY KEY, FK → `public.users(user_id)` | ID Pemilik |
 | `theme_mode` | TEXT | DEFAULT 'auto' | Opsi tema (`light`, `dark`, `auto`) |
 | `updated_at` | TIMESTAMPTZ | DEFAULT now() | Waktu pembaruan preferensi |
+
+#### 5. Table `public.app_distributions`
+Konfigurasi mode akses aplikasi hasil generasi ke end-user (FR-DST-01/02).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `project_id` | UUID | FK → `public.projects(id)` | Proyek terkait |
+| `slug` | TEXT | NOT NULL, UNIQUE | Slug unik publik |
+| `mode` | TEXT | CHECK IN ('PRIVATE','RESTRICTED','PUBLIC') | Mode akses |
+| `revoked_at` | TIMESTAMPTZ | NULLABLE | Waktu pencabutan |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp pembuatan |
+
+#### 6. Table `public.usage_counters`
+Kuota per user (FR-QTA-01): proyek, ukuran DB, jumlah objek, file.
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `user_id` | UUID | PK, FK → `public.users(user_id)` | Pemilik kuota |
+| `projects_count` | INTEGER | DEFAULT 0 | Jumlah proyek aktif |
+| `db_size_bytes` | BIGINT | DEFAULT 0 | Total ukuran DB (`data_dev`+`data_prod`) |
+| `objects_count` | BIGINT | DEFAULT 0 | Jumlah objek dinamis per user |
+| `files_count` | BIGINT | DEFAULT 0 | Jumlah attachment |
+| `files_bytes` | BIGINT | DEFAULT 0 | Total ukuran attachment |
+| `updated_at` | TIMESTAMPTZ | DEFAULT now() | Waktu pembaruan |
+
+#### 7. Table `public.audit_logs`
+Audit log immutable (append-only) untuk DDL, promotion, migration, hard-delete, RLS/SQL Guard rejection (FR-OBS-01).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | BIGINT | IDENTITY PK | Auto-increment |
+| `user_id` | UUID | NOT NULL | Pelaku |
+| `project_id` | UUID | NULLABLE | Proyek terkait |
+| `action` | TEXT | CHECK IN ('DDL_EXECUTE','PUSH_TO_PROD','MIGRATION_APPLY','MIGRATION_ROLLBACK','HARD_DELETE','RLS_REJECT','SQL_GUARD_REJECT','QUOTA_EXCEED','XSS_REJECT','ABUSE_REJECT') | Jenis aksi |
+| `detail_jsonb` | JSONB | NULLABLE | Detail konteks |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+#### 8. Table `public.project_members`
+Multi-user collaboration per proyek (FR-COL-01).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `project_id` | UUID | FK → `public.projects(id)`, PK | Proyek |
+| `user_id` | UUID | FK → `public.users(user_id)`, PK | Kolaborator |
+| `role` | TEXT | DEFAULT 'viewer', CHECK IN ('owner','editor','viewer') | Role akses |
+| `invited_by` | UUID | NULLABLE, FK → `public.users(user_id)` | Pengundang |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+#### 9. Table `public.error_logs`
+Centralized error sink & tracing (FR-ERR-01..03).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | BIGINT | IDENTITY PK | Auto-increment |
+| `user_id` | UUID | NULLABLE | User (null utk anon/public) |
+| `project_id` | UUID | NULLABLE | Proyek (null utk platform-level) |
+| `environment` | TEXT | DEFAULT 'DEV', CHECK IN ('DEV','PROD','PLATFORM') | Environment asal error |
+| `source` | TEXT | CHECK IN ('CLIENT','DAL','WORKFLOW','AI_PROVIDER','DB') | Sumber error |
+| `severity` | TEXT | DEFAULT 'ERROR', CHECK IN ('DEBUG','INFO','WARN','ERROR','FATAL') | Severity |
+| `error_code` | TEXT | NULLABLE | Mapping `ERR_*` |
+| `message` | TEXT | NOT NULL | Pesan error (PII-scrubbed) |
+| `stack_trace` | TEXT | NULLABLE | Stack trace |
+| `fingerprint` | TEXT | NOT NULL | Hash normalized message+stack |
+| `session_id` | TEXT | NULLABLE | Konteks sesi |
+| `request_id` | TEXT | NULLABLE | Konteks request |
+| `context_jsonb` | JSONB | NULLABLE | Page/node/endpoint/device/locale |
+| `status` | TEXT | DEFAULT 'OPEN', CHECK IN ('OPEN','INVESTIGATING','RESOLVED','IGNORED') | Siklus triage |
+| `occurrence_count` | INTEGER | DEFAULT 1 | Dedup fingerprint |
+| `last_seen_at` | TIMESTAMPTZ | DEFAULT now() | Kejadian terakhir |
+| `resolution_note` | TEXT | NULLABLE | Catatan resolusi |
+| `resolved_by` | UUID | NULLABLE | Penanya triage |
+| `resolved_at` | TIMESTAMPTZ | NULLABLE | Waktu resolve |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+#### 10. Table `public.templates` + `public.template_items`
+Template Marketplace (FR-MKT-01): metadata template + item struktur Logic.
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `author_user_id` | UUID | FK → `public.users(user_id)` | Author template |
+| `name` | TEXT | NOT NULL | Nama template |
+| `description` | TEXT | NULLABLE | Deskripsi |
+| `version` | INTEGER | DEFAULT 1 | Versi template |
+| `schema_version` | TEXT | NOT NULL | Engine version saat ekspor |
+| `tags` | TEXT[] | DEFAULT '{}' | Tag pencarian |
+| `visibility` | TEXT | DEFAULT 'private', CHECK IN ('public','private') | Visibilitas |
+| `revoked_at` | TIMESTAMPTZ | NULLABLE | Waktu pencabutan |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+`template_items`: `id` (UUID PK), `template_id` (FK → templates, ON DELETE CASCADE), `item_type` (CHECK IN ('PAGE','WORKFLOW','SCHEMA_VERSION','TRANSLATION')), `payload_json` (JSONB).
+
+#### 11. Table `public.starter_use_cases`
+Galeri prompt siap kirim di Studio (FSD §3.4.3).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `title` | JSONB | NOT NULL | `{ "id": "...", "en": "..." }` |
+| `description` | JSONB | NULLABLE | Deskripsi per locale |
+| `category` | TEXT | NULLABLE | Kelompok (sales, education, dll.) |
+| `icon` | TEXT | NULLABLE | Nama ikon UI |
+| `prompt_text` | JSONB | NOT NULL | `{ "id": "...", "en": "..." }` prompt siap kirim |
+| `is_active` | BOOLEAN | DEFAULT true | Tampil/tidak |
+| `sort_order` | INTEGER | DEFAULT 0 | Urutan tampil |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
 
 ---
 
@@ -299,6 +411,53 @@ Definisi logika *workflow* terstruktur.
 | `trigger_type` | TEXT | NOT NULL | Pemicu (`FORM_EVENT`, `SCHEDULER`, `QUEUE`, `MANUAL`) |
 | `trigger_config` | JSONB | NOT NULL | Konfigurasi Trigger |
 | `workflow_json` | JSONB | NOT NULL | Definisi langkah/node workflow |
+
+#### 3. Table `{usr8}_{prj8}_page_schema_versions`
+Versi skema halaman untuk rollback (FR-STU-02).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `page_id` | UUID | FK → `{prefix}_generated_pages(id)` ON DELETE CASCADE | Halaman terkait |
+| `version` | INTEGER | NOT NULL | Nomor versi |
+| `schema_json` | JSONB | NOT NULL | Snapshot skema |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+#### 4. Table `{usr8}_{prj8}_app_translations`
+String i18n aplikasi hasil generasi (FR-I18N-02).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `key` | TEXT | NOT NULL | Translation key |
+| `locale` | TEXT | CHECK IN ('id','en') | Locale |
+| `value` | TEXT | NOT NULL | Teks terjemahan |
+| `updated_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+| — | — | UNIQUE (`key`, `locale`) | Unik per key+locale |
+
+#### 5. Table `{usr8}_{prj8}_schema_snapshots`
+Snapshot struktur untuk structural diff migration DEV↔PROD (FR-MIG-04).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `environment` | TEXT | CHECK IN ('DEV','PROD') | Environment snapshot |
+| `snapshot_json` | JSONB | NOT NULL | Dump struktur |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+#### 6. Table `{usr8}_{prj8}_migration_history`
+Riwayat migration re-push ke PROD (di `logic_prod`).
+
+| Column Name | Data Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | UUID v4 |
+| `diff_checksum` | TEXT | NOT NULL | Checksum diff |
+| `operations_json` | JSONB | NOT NULL | Daftar operasi |
+| `status` | TEXT | CHECK IN ('APPLIED','ROLLED_BACK','FAILED') | Status |
+| `duration_ms` | INTEGER | NULLABLE | Durasi eksekusi |
+| `created_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp |
+
+> Seluruh objek Logic dibuat dinamis dengan prefiks `{usr8}_{prj8}_` dan dikloning struktur ke `logic_prod` saat Push to PROD. Detail lengkap DDL: FSD §4.2.
 
 ---
 
@@ -344,6 +503,8 @@ Riwayat eksekusi logika bisnis.
 | `executed_at` | TIMESTAMPTZ | DEFAULT now() | Timestamp eksekusi |
 
 > **Catatan Push to PROD:** aksi *Push to PROD* melakukan *clone struktur saja* (DDL) dari objek `{usr8}_{prj8}_*` pada `logic_dev`/`data_dev` ke `logic_prod`/`data_prod`. Data operasional tidak ikut disalin.
+
+> **Isolasi & Ownership (FSD §3.1.5):** setiap objek Data (termasuk tabel bisnis dinamis hasil Publish) **wajib** memiliki kolom ownership terdenormalisasi `owner_user_id` (UUID) dan `project_id` (UUID) yang diisi DAL dari JWT + proyek aktif — bukan dari payload klien. RLS policy `{prefix}_owner_only` (`"owner_user_id" = auth.uid()`) dipasang pada SETIAP objek. Detail DDL lengkap: FSD §4.3.
 
 ---
 
