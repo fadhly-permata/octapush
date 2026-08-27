@@ -1,0 +1,19 @@
+{
+  "name": "octapush-client",
+  "owner": "fadhly-permata",
+  "slug": "octapush",
+  "version": "0.1.0",
+  "orientation": "default",
+  "userInterfaceStyle": "automatic",
+  "newArchEnabled": true,
+  "ios": { "supportsTablet": true, "bundleIdentifier": "dev.octapush.app" },
+  "android": { "package": "dev.octapush.app", "adaptiveIcon": { "backgroundColor": "#ffffff" } },
+  "web": { "bundler": "metro", "output": "static" },
+  "plugins": ["expo-router"],
+  "experiments": { "typedRoutes": true },
+  "extra": {
+    "eas": { "projectId": "22a150e8-37d6-4113-a841-67a1436c34a2" },
+    "supabaseUrl": "http://localhost:54321",
+    "supabaseAnonKey": "REPLACE_WITH_LOCAL_ANON_KEY"
+  }
+}

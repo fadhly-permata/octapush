@@ -1,0 +1,20 @@
+{
+  "cli": { "version": ">= 7.0.0" },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": { "SUPABASE_URL": "https://REPLACE.supabase.co", "SUPABASE_ANON_KEY": "REPLACE" }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": { "SUPABASE_URL": "https://REPLACE.supabase.co", "SUPABASE_ANON_KEY": "REPLACE" }
+    },
+    "production": {
+      "env": { "SUPABASE_URL": "https://REPLACE.supabase.co", "SUPABASE_ANON_KEY": "REPLACE" }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

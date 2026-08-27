@@ -1,0 +1,19 @@
+{
+  "name": "octapush",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-Driven Dynamic UI, Form Generator & Workflow Engine — cross-platform (Web, Android, iOS)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "expo start --project-dir apps/client",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "jest"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

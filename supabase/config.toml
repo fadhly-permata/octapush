@@ -1,0 +1,35 @@
+project_id = "octapush"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "logic_dev", "data_dev", "logic_prod", "data_prod"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://localhost:8081"
+additional_redirect_urls = ["exp://localhost:8081", "http://localhost:8081"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.providers.google]
+enabled = true
+
+[edge_runtime]
+enabled = true
+
+[realtime]
+enabled = true
+
+[storage]
+enabled = true
