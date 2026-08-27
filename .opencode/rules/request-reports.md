@@ -1,12 +1,15 @@
-# Request Reports (mandatory, every request)
+# Request Reports (mandatory, except exceptions below)
 
-Every user request in this project MUST have a report file. Write the report twice: once at the START of the request, once updated at the END (request = one user message plus all tool calls that follow it).
+Every user request in this project MUST have a report file, EXCEPT the pure question-answer and commit/push cases listed under "Exceptions". Write the report twice: once at the START of the request, once updated at the END (request = one user message plus all tool calls that follow it).
 
 ## Exceptions (no report needed)
 
+- Request that is ONLY a question and is answered by pure question-answer conversation — no repo action at all (no code edits, docs, config, analysis, commits, or other file/system changes). Skip report entirely. No file created.
+  - Rationale: pure Q&A is conversation with nothing to describe; creating a report for it is noise.
+  - If the request involves ANY repo-side work (even a small config edit, doc change, or analysis that writes files), a report IS required.
 - Request whose ONLY action is `git commit` and/or `git push` — skip report entirely. No file created.
-- Rationale: commit/push requests are pure bookkeeping with no repo-side work to describe.
-- If the request ALSO does real work (code edits, docs, config, analysis) before/after the commit, a report IS required.
+  - Rationale: commit/push requests are pure bookkeeping with no repo-side work to describe.
+  - If the request ALSO does real work (code edits, docs, config, analysis) before/after the commit, a report IS required.
 
 ## Location & filename
 
@@ -59,4 +62,4 @@ Reports are ALWAYS written in Bahasa Indonesia (code, paths, and error strings s
 1. START of request: create folder + report file with "Permintaan User" + "Rencana Aksi" filled in, Status = "Dalam Pengerjaan". Do this BEFORE the first tool call for core work.
 2. END of request: edit the SAME file — fill "Yang Telah Dilakukan" + "Status Akhir", final Status ("Selesai" / "Gagal/Sebagian"). NEVER create a second file.
 3. If the user cancels mid-request: still update the file, Status = "Gagal/Sebagian", note where work stopped.
-4. Pure question-and-answer requests with no repo action STILL get a report — every request is reported.
+4. If the request is pure question-answer with NO repo action (see Exceptions): skip the report entirely — no file created.
