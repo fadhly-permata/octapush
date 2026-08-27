@@ -6,7 +6,7 @@ import { AppError } from '@octapush/types';
 /** Invite a registered user to a project with a role (owner-only). */
 export async function inviteMember(
   sb: SupabaseClient,
-  ctx: DalContext,
+  _ctx: DalContext,
   projectId: string,
   email: string,
   role: ProjectMember['role'],

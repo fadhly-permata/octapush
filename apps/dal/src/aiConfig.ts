@@ -1,7 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import type { DalContext } from './client';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { AIProviderClient, type AIConfig } from '@octapush/ai';
+import { AIProviderClient } from '@octapush/ai';
+import type { AIConfig } from '@octapush/types';
 import { AppError } from '@octapush/types';
 
 const ALGO = 'aes-256-cbc';
@@ -29,7 +30,7 @@ export function decryptApiKey(stored: string): string {
 /** Save (upsert) an AI config for the current user with encrypted key. */
 export async function saveAiConfig(
   sb: SupabaseClient,
-  ctx: DalContext,
+  _ctx: DalContext,
   input: { provider_name: string; base_url: string; api_key: string; model_name: string },
 ): Promise<void> {
   const { error } = await sb.from('ai_configs').upsert({
