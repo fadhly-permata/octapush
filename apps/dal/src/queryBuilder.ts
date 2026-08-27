@@ -1,4 +1,5 @@
-import { safeQualify, type DalContext } from './client';
+import type { DalContext } from './client';
+import { safeQualify } from '@octapush/utils';
 import { AppError } from '@octapush/types';
 
 export type DmlVerb = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE';

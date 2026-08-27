@@ -1,4 +1,3 @@
-import type { DalContext } from './client';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { AppError } from '@octapush/types';
 

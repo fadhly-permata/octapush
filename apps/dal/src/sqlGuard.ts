@@ -1,4 +1,5 @@
-import { belongsToPrefix, type DalContext } from './client';
+import type { DalContext } from './client';
+import { belongsToPrefix } from '@octapush/utils';
 import { AppError } from '@octapush/types';
 
 const ALLOWED_VERBS = /^(\s*(SELECT|INSERT|UPDATE|DELETE)\b)/i;

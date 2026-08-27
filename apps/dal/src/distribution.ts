@@ -6,7 +6,7 @@ import { AppError } from '@octapush/types';
 /** Create a public distribution record for a pushed-to-PROD project (FSD §3.7). */
 export async function createDistribution(
   sb: SupabaseClient,
-  ctx: DalContext,
+  _ctx: DalContext,
   projectId: string,
   mode: AppDistributionMode,
 ): Promise<{ slug: string }> {
@@ -23,7 +23,7 @@ export async function createDistribution(
 /** Trigger Push to PROD (structure-only clone) via RPC (FSD §3.1.4). */
 export async function pushToProd(
   sb: SupabaseClient,
-  ctx: DalContext,
+  _ctx: DalContext,
   projectId: string,
 ): Promise<{ cloned: number }> {
   const { data, error } = await sb.rpc('push_project_to_prod', { p_project_id: projectId });
