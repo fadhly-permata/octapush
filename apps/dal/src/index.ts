@@ -4,3 +4,4 @@ export * from './sqlGuard';
 export * from './errors';
 export * from './executor';
 export * from './aiConfig';
+export * from './distribution';
