@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+      - run: npm install
+      - name: Lint (ESLint custom rules — FSD §7.2)
+        run: npm run lint
+      - name: Typecheck (TS strict)
+        run: npm run typecheck
