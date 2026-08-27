@@ -5,6 +5,33 @@
 - Request type: adhoc
 - Status: Selesai
 
+> **Update lanjutan (F2-F5):** sesi berlanjut atas instruksi "lanjut terus jangan stop". Seluruh fase PRD F1–F5 di-scaffold. Commit tambahan:
+
+- **`c409d34`** `@octapush/ai`: multi-provider client (OpenRouter/OpenAI/HF/Ollama/LiteLLM), system prompt + JSON schema validation + repair loop (F2/ai-engineer).
+- **`6755c6b`** DAL `aiConfig`: AES-256 encrypt API key (FR-AIC-02), test connection (FR-AIC-03), upsert.
+- **`dbf31a9`** apps/client: Studio dual-pane, DynamicForm renderer, SettingsAIScreen, publish-to-DEV service.
+- **`e02176e`** wire generate+repair pipeline (max 3 retry), publish loop, expo-router nav (index/studio/settings).
+- **`ca38ab6`** DAL `distribution`: createDistribution + pushToProd (F3).
+- **`14f9368`** apps/client: DistributionScreen (push+modes PRIVATE/RESTRICTED/PUBLIC) + ErrorLogScreen (triage).
+- **`123ab6b`** `@octapush/i18n` (locale resolution fallback id) + `@octapush/security` (sanitize, URL/MIME guard) — F4.
+- **`9bcd35f`** F5 backend: migration 0004 (realtime broadcast trigger, invite_member, export_template RPC), DAL collaboration + template services.
+- **`dcfdf5c`** apps/client: CollaborationScreen (invite roles) + TemplateScreen (marketplace/export).
+
+## F1-F5 scaffolding summary
+
+- **F1**: monorepo, `@octapush/types/schemas/utils`, `@octapush/dal` (client, QueryBuilder, SqlGuard, executor, errors→error_logs), Supabase 4 migrations + seed + Edge Function + config, apps/client Expo scaffold + ThemeProvider + AuthGate, ESLint/CI/.env, QA docs (loadtest/STRIDE/gates).
+- **F2**: `@octapush/ai` provider + prompt + validation repair, Studio dual-pane, DynamicForm, publish-to-DEV, AI settings.
+- **F3**: distribution + push-to-prod + error log dashboard.
+- **F4**: i18n + security hardening packages.
+- **F5**: realtime broadcast, collaboration invite, template marketplace.
+
+## TODO (belum dikerjakan, butuh sesi lanjutan)
+
+- `npm install` + `tsc`/`lint` run + fix (belum pernah dijalankan — hindari timeout sesi).
+- `supabase start` + link project + jalankan migrasi.
+- Wiring nyata: Google OAuth signIn, load active AIConfig, load DalContext dari session, `promotion_lock` di RPC push, Ekspos DAL endpoint (Edge Function auth guard penuh).
+- Load-test F1 (NFR-PER-03) eksekusi + laporan hasil.
+
 ## Permintaan User
 
 PM diminta ambil peran, koordinasikan semua agent/role, lakukan semua yang perlu, jangan minta pendapat lagi, dan pisahkan branch untuk kerjaan.
