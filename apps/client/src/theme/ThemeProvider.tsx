@@ -1,13 +1,13 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { useColorScheme } from 'react-native';
 import type { ThemeMode } from '@octapush/types';
-import { resolveTheme, LightTheme, type LightTheme as LT } from './theme';
-import type { Theme } from 'react-native-paper';
+import { resolveTheme, LightTheme } from './theme';
+import type { MD3Theme } from 'react-native-paper';
 
 interface ThemeCtx {
   mode: ThemeMode;
   setMode: (m: ThemeMode) => void;
-  paperTheme: Theme;
+  paperTheme: MD3Theme;
 }
 
 const Ctx = createContext<ThemeCtx>({ mode: 'auto', setMode: () => {}, paperTheme: LightTheme });
@@ -22,6 +22,3 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 export function useAppTheme(): ThemeCtx {
   return useContext(Ctx);
 }
-
-// avoid unused import lint while keeping LightTheme type import explicit
-void (LightTheme as unknown as LT);

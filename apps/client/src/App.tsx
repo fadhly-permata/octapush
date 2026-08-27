@@ -1,6 +1,6 @@
 import { PaperProvider } from 'react-native-paper';
-import { ThemeProvider, useAppTheme } from './src/theme/ThemeProvider';
-import { AuthGate } from './src/screens/AuthGate';
+import { ThemeProvider, useAppTheme } from './theme/ThemeProvider';
+import { AuthGate } from './screens/AuthGate';
 
 export default function App() {
   return (

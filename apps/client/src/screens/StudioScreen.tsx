@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, TextInput, Button, Divider } from 'react-native-paper';
 import { DynamicForm } from '../studio/DynamicForm';
-import { GenerationSchemaParsed } from '@octapush/schemas';
+import type { GenerationSchemaParsed } from '@octapush/schemas';
 import { generateSchema } from '../services/generate';
 import { publishToDev } from '../services/publish';
 import type { DalContext } from '@octapush/dal';
@@ -32,9 +32,10 @@ export function StudioScreen({ ctx }: { ctx: DalContext }) {
     const out = await generateSchema(cfg, input);
     setBusy(false);
     if (out.ok && out.schema) {
-      setPreview(out.schema);
-      setMessages((m) => [...m, { role: 'assistant', text: `Generated: ${out.schema.page_title}` }]);
-      const pub = await publishToDev(ctx, out.schema);
+      const schema = out.schema;
+      setPreview(schema);
+      setMessages((m) => [...m, { role: 'assistant', text: `Generated: ${schema.page_title}` }]);
+      const pub = await publishToDev(ctx, schema);
       setStatus(pub.ok ? 'Published to DEV' : `Publish failed: ${pub.error?.message}`);
     } else {
       setStatus(out.error ?? 'Generation failed');

@@ -8,7 +8,7 @@ import type { ErrorLogEntry } from '@octapush/types';
  * Centralized Error Log dashboard + triage view (FSD §3.8.5, FR-ERR-01..03).
  * Groups by fingerprint, filters by severity, supports triage status change.
  */
-export function ErrorLogScreen({ ctx }: { ctx: DalContext }) {
+export function ErrorLogScreen({ ctx: _ctx }: { ctx: DalContext }) {
   const [logs, setLogs] = useState<ErrorLogEntry[]>([]);
   const [query, setQuery] = useState('');
 

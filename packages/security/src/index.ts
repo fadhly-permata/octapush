@@ -36,7 +36,7 @@ export function validateUrlScheme(url: string): boolean {
 /** Normalize a user-supplied file name: keep base name, strip path traversal. */
 export function sanitizeFileName(name: string): string {
   const base = name.split(/[/\\]/).pop() ?? 'file';
-  return base.replace(/[^\w.\-]/g, '_');
+  return base.replace(/[^\w.-]/g, '_');
 }
 
 export const ALLOWED_MIME_PREFIXES = ['image/', 'application/pdf', 'text/'];

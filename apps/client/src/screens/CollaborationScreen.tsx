@@ -9,7 +9,7 @@ import type { ProjectMember } from '@octapush/types';
 export function CollaborationScreen({ ctx, projectId }: { ctx: DalContext; projectId: string }) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<ProjectMember['role']>('viewer');
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [members] = useState<ProjectMember[]>([]);
   const [status, setStatus] = useState('');
 
   const onInvite = async () => {

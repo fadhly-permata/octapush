@@ -1,7 +1,7 @@
-import { MD3LightTheme, MD3DarkTheme, type Theme } from 'react-native-paper';
+import { MD3LightTheme, MD3DarkTheme, type MD3Theme } from 'react-native-paper';
 import type { ThemeMode } from '@octapush/types';
 
-export const LightTheme: Theme = {
+export const LightTheme: MD3Theme = {
   ...MD3LightTheme,
   colors: {
     ...MD3LightTheme.colors,
@@ -11,7 +11,7 @@ export const LightTheme: Theme = {
   },
 };
 
-export const DarkTheme: Theme = {
+export const DarkTheme: MD3Theme = {
   ...MD3DarkTheme,
   colors: {
     ...MD3DarkTheme.colors,
@@ -21,7 +21,7 @@ export const DarkTheme: Theme = {
   },
 };
 
-export function resolveTheme(mode: ThemeMode, systemIsDark: boolean): Theme {
+export function resolveTheme(mode: ThemeMode, systemIsDark: boolean): MD3Theme {
   if (mode === 'light') return LightTheme;
   if (mode === 'dark') return DarkTheme;
   return systemIsDark ? DarkTheme : LightTheme;

@@ -1,5 +1,7 @@
 import { AIProviderClient, SYSTEM_PROMPT, validateGeneration, buildRepairPrompt } from '@octapush/ai';
-import type { AIConfig, GenerationSchemaParsed } from '@octapush/types';
+import type { ChatMessage } from '@octapush/ai';
+import type { AIConfig } from '@octapush/types';
+import type { GenerationSchemaParsed } from '@octapush/schemas';
 
 /**
  * Iterative generation pipeline (FSD §3.4, ai-engineer retry loop):
@@ -20,9 +22,9 @@ export async function generateSchema(
   maxRetries = 3,
 ): Promise<GenerateOutcome> {
   const client = new AIProviderClient(cfg);
-  const messages = [
-    { role: 'system' as const, content: SYSTEM_PROMPT },
-    { role: 'user' as const, content: userPrompt },
+  const messages: ChatMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userPrompt },
   ];
 
   let lastRaw = '';

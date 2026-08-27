@@ -15,7 +15,7 @@ export interface FieldDef {
   label: string;
   component: FieldComponent;
   required: boolean;
-  default_value: Nullable<string | number | boolean>;
+  default_value?: Nullable<string | number | boolean>;
 }
 
 export interface Section {

@@ -33,9 +33,9 @@ export async function publishToDev(ctx: DalContext, schema: GenerationSchemaPars
     `  FOR ALL USING ("owner_user_id" = auth.uid()) WITH CHECK ("owner_user_id" = auth.uid());`,
   ].join('\n');
 
-  const r1 = await runDml(ctx, (qb) => createSql);
+  const r1 = await runDml(ctx, (_qb) => createSql);
   if (r1.error) return { error: r1.error };
-  const r2 = await runDml(ctx, (qb) => rlsSql);
+  const r2 = await runDml(ctx, (_qb) => rlsSql);
   if (r2.error) return { error: r2.error };
   return { ok: true as const };
 }

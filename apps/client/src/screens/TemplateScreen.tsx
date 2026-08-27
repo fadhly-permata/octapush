@@ -7,7 +7,7 @@ import { listTemplates, exportTemplate } from '@octapush/dal';
 interface Tpl { id: string; name: string; version: number; schema_version: string }
 
 /** Template Marketplace (FSD §3.11.3): browse public templates, export current project. */
-export function TemplateScreen({ ctx, projectId }: { ctx: DalContext; projectId: string }) {
+export function TemplateScreen({ ctx: _ctx, projectId }: { ctx: DalContext; projectId: string }) {
   const [templates, setTemplates] = useState<Tpl[]>([]);
   const [name, setName] = useState('');
   const [status, setStatus] = useState('');
