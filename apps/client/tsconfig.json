@@ -5,7 +5,15 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "noEmit": true,
-    "types": ["react-native", "node"]
+    "types": [
+      "react-native",
+      "node"
+    ]
   },
-  "include": ["src", "app"]
+  "include": [
+    "src",
+    "app",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
 }
